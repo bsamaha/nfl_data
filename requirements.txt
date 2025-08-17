@@ -1,0 +1,15 @@
+typer[all]
+pydantic
+pyyaml
+python-dotenv
+pandas>=2.1.1
+polars
+pyarrow
+duckdb
+pandera>=0.18.0
+tenacity
+structlog
+filelock
+orjson
+nfl_data_py
+

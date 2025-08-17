@@ -1,0 +1,114 @@
+root: "data"
+compression: "zstd"
+row_group_mb: 96
+
+datasets:
+  pbp:
+    importer: "pbp"
+    years: "ALL"
+    partitions: ["year"]
+    key: ["game_id", "play_id"]
+    options: { downcast: true, cache: false }
+    enabled: true
+    sort_by: ["year", "game_id", "play_id"]
+    max_rows_per_file: 5000000
+
+  schedules:
+    importer: "schedules"
+    years: "ALL"
+    partitions: ["season"]
+    key: ["game_id"]
+    enabled: true
+    sort_by: ["season", "game_id"]
+    max_rows_per_file: 1000000
+
+  weekly:
+    importer: "weekly"
+    years: "ALL"
+    partitions: ["season"]
+    key: ["season","week","player_id","team"]
+    enabled: true
+    sort_by: ["season","week","player_id","team"]
+    max_rows_per_file: 2000000
+
+  rosters:
+    importer: "rosters"
+    years: "ALL"
+    partitions: ["season"]
+    key: ["season","week","player_id","team"]
+    enabled: true
+    sort_by: ["season","week","player_id","team"]
+    max_rows_per_file: 1000000
+
+  injuries:
+    importer: "injuries"
+    years: "ALL"
+    partitions: ["season"]
+    key: ["season","week","team","player_id"]
+    enabled: true
+    sort_by: ["season","week","team","player_id"]
+    max_rows_per_file: 1000000
+
+  depth_charts:
+    importer: "depth_charts"
+    years: "ALL"
+    partitions: ["season"]
+    key: ["season","week","team","position","player_id"]
+    enabled: true
+    sort_by: ["season","week","team","position","player_id"]
+    max_rows_per_file: 1000000
+
+  snap_counts:
+    importer: "snap_counts"
+    years: "ALL"
+    partitions: ["season"]
+    key: ["season","week","team","player_id"]
+    enabled: true
+    sort_by: ["season","week","team","player_id"]
+    max_rows_per_file: 1000000
+
+  officials:
+    importer: "officials"
+    years: "ALL"
+    partitions: ["season"]
+    key: ["game_id","official_id"]
+    enabled: false
+    sort_by: ["season","game_id","official_id"]
+    max_rows_per_file: 500000
+
+  win_totals:
+    importer: "win_totals"
+    years: "ALL"
+    partitions: ["season"]
+    key: ["season","team"]
+    enabled: false
+    sort_by: ["season","team"]
+    max_rows_per_file: 200000
+
+  scoring_lines:
+    importer: "scoring_lines"
+    years: "ALL"
+    partitions: ["season"]
+    key: ["season","game_id"]
+    enabled: false
+    sort_by: ["season","game_id"]
+    max_rows_per_file: 200000
+
+  draft_picks:
+    importer: "draft_picks"
+    years: "ALL"
+    partitions: ["season"]
+    key: ["season","overall","team"]
+    enabled: false
+    sort_by: ["season","overall"]
+    max_rows_per_file: 200000
+
+  combine:
+    importer: "combine"
+    years: "ALL"
+    partitions: ["season"]
+    key: ["season","player_id"]
+    enabled: false
+    sort_by: ["season","player_id"]
+    max_rows_per_file: 200000
+

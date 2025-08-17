@@ -1,0 +1,54 @@
+{
+  "dataset": "injuries",
+  "layer": "silver",
+  "partition": "season=2022",
+  "metrics": {
+    "rows": 5682,
+    "num_columns": 17,
+    "columns": [
+      "date_modified",
+      "first_name",
+      "full_name",
+      "game_type",
+      "player_id",
+      "last_name",
+      "pipeline_version",
+      "position",
+      "practice_primary_injury",
+      "practice_secondary_injury",
+      "practice_status",
+      "report_primary_injury",
+      "report_secondary_injury",
+      "report_status",
+      "source",
+      "team",
+      "week"
+    ],
+    "dtypes": {
+      "date_modified": "Datetime(time_unit='us', time_zone='UTC')",
+      "first_name": "String",
+      "full_name": "String",
+      "game_type": "String",
+      "player_id": "String",
+      "last_name": "String",
+      "pipeline_version": "String",
+      "position": "String",
+      "practice_primary_injury": "String",
+      "practice_secondary_injury": "String",
+      "practice_status": "String",
+      "report_primary_injury": "String",
+      "report_secondary_injury": "String",
+      "report_status": "String",
+      "source": "String",
+      "team": "String",
+      "week": "Int64"
+    },
+    "key_nulls": {
+      "week": 0,
+      "team": 0,
+      "player_id": 0
+    },
+    "week_min": 1,
+    "week_max": 22
+  }
+}

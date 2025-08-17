@@ -57,10 +57,12 @@
    - `--max-workers` to control parallelism across independent datasets
    - Retries with exponential backoff per dataset
    - A simple file lock to prevent overlapping runs
+   - `promote` command to promote existing bronze partitions to silver without re-fetching
  - **Flows**:
    - `bootstrap`: historical backfill (1999 → last season)
    - `update`: in-season (current season), idempotent
    - `recache-pbp`: re-pull current season on Thu for stat corrections
+   - `promote`: read existing bronze by partition, merge with existing silver, dedupe on keys, and atomically replace only that partition
  - **Parallelism**: parallelize independent datasets; cap workers to avoid upstream hammering
  
  Incremental silver promotion (partition-aware):
@@ -106,6 +108,7 @@
    - **Partition-level**: `row_count`, `sha256_fingerprint`, `min_ingested_at`, `max_ingested_at`
  - Partition fingerprint on keys (or key + stable columns) to detect changes efficiently
  - Structured logs to `logs/<run_id>.jsonl`; emit per-dataset timings and row counts
+ - Implemented: per-partition lineage stats computed during promote (row_count, key fingerprint, min/max ingested_at)
  
  Example lineage entry:
  ```json
@@ -129,8 +132,10 @@
  - Enforce snake_case columns and stable order
  - Cast IDs to string; timestamps to UTC; booleans to nullable
  - Drop volatile, low-value columns in silver unless needed downstream
- - Optional sort within partition by `sort_by` before write (improves stats/pruning)
+ - Optional sort within partition by `sort_by` before write (improves stats/pruning) — Implemented: silver writer now pre-sorts by configured `sort_by` if present
  - Add per-dataset transform hook: `src/lake/transforms/<dataset>.py` with `def to_silver(df) -> df`
+ - Add per-dataset transform hook: `src/lake/transforms/<dataset>.py` with `def to_silver(df) -> df`
+ - Weekly specifics: if `team` is missing but `recent_team` exists, rename `recent_team → team`
  
  ## 8) Querying and Gold
  - Use **DuckDB** for ad-hoc SQL (no server) and direct Parquet reads
@@ -178,12 +183,29 @@
  5 4 * * * cd /home/r16/workspace/nfl_data && flock -n .lake.lock -- python -m src.cli update --season 2025 --datasets schedules | ts | tee -a logs/cron_schedules.log
  ```
  
+ Backfill scripts:
+ ```bash
+ # All-history bootstrap (safe to re-run; idempotent writes)
+ python -m src.cli bootstrap --years 1999-2024
+
+ # Selective backfills
+ python -m src.cli bootstrap --years 1999-2024 --datasets weekly,schedules
+ python -m src.cli bootstrap --years 2012-2024 --datasets injuries,depth_charts,snap_counts
+ python -m src.cli bootstrap --years 2002-2024 --datasets rosters
+
+ # Promote any bronze left behind (partition-scoped, atomic)
+ python -m src.cli promote --datasets weekly,schedules,rosters,injuries,depth_charts,snap_counts
+
+ # Profile silver quality by partition
+ python -m src.cli profile --layer silver --datasets weekly,schedules,rosters,injuries,depth_charts,snap_counts
+ ```
+ 
  ## 11) Resilience and Performance Knobs
  - Retries/backoff for fetch; per-dataset timeouts
  - Parallelism: `--max-workers` (default 2–4); cap per dataset if upstream sensitive
  - Writer knobs: `row_group_mb`, `max_rows_per_file`, `use_dictionary`
  - Compaction: optionally re-write large partitions periodically to target file sizes and sort order
- - Memory: process by partition/chunk to cap memory during merges
+ - Memory: process by partition/chunk to cap memory during merges — Implemented: vectorized metadata stamping (pandas concat) to avoid fragmentation
  
  ## 12) Governance and Licensing
  - Persist `source`, `upstream_version` (from `nfl_data_py.__version__)`, and `pipeline_version`
@@ -215,12 +237,20 @@
  # 2) Bootstrap history
  python -m src.cli bootstrap --years 1999-2024
  
+ # 2b) Promote existing bronze partitions to silver (e.g., weekly)
+ python -m src.cli promote --datasets weekly
+ 
  # 3) In-season update
  python -m src.cli update --season 2025
  
  # 4) Query with DuckDB
  duckdb
  SELECT COUNT(*) FROM read_parquet('data/silver/pbp/year=2025/*.parquet');
+ -- Quick verification of weekly row counts per season
+ SELECT season, COUNT(*) AS rows
+ FROM read_parquet('data/silver/weekly/season=*/**/*.parquet')
+ GROUP BY season
+ ORDER BY season;
  ```
  
  ## Why this improves the current plan
@@ -265,7 +295,7 @@
   ```
   - **Writer optimizations**:
     - Prefer `pyarrow.dataset.write_dataset` with `max_rows_per_group`, `max_rows_per_file`, `compression='zstd'`, and a tuned `compression_level` (5–7)
-    - Enable `use_dictionary` for low-cardinality columns and sort within partition by `sort_by` before write to improve pruning
+    - Enable `use_dictionary` for low-cardinality columns and sort within partition by `sort_by` before write to improve pruning — Implemented: silver writer supports `sort_by` pre-sorting
   - **Resilient fetch + CLI/logging**:
     - Retries with exponential backoff + jitter (`tenacity`); thread pool for network-bound fetch
     - Additional CLI flags: `--since` (YYYY-MM-DD), `--dry-run`, `--no-validate`, `--force-rewrite`
@@ -277,6 +307,7 @@
   - **Performance and maintenance**:
     - Process by partition/chunk to cap memory during merges; process pool for CPU-bound transforms
     - Periodic compaction to target file sizes and sort order; optional Bloom filters when supported
+    - Implemented: replace per-row pandas assignments with vectorized concat to reduce fragmentation
   - **Optional modeling/format upgrades**:
     - dbt-duckdb for silver/gold SQL modeling with built-in tests (unique, not_null, accepted_values), docs, and exposures
     - If you need ACID/time travel: Delta Lake (delta-rs) or Apache Iceberg (via DuckDB extensions). Adds schema evolution, VACUUM, time travel at the cost of complexity

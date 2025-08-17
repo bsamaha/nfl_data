@@ -1,0 +1,55 @@
+{
+  "dataset": "snap_counts",
+  "layer": "silver",
+  "partition": "season=2017",
+  "metrics": {
+    "rows": 534,
+    "num_columns": 18,
+    "columns": [
+      ".progress",
+      "defense_pct",
+      "defense_snaps",
+      "game_id",
+      "game_type",
+      "offense_pct",
+      "offense_snaps",
+      "opponent",
+      "pfr_game_id",
+      "pfr_player_id",
+      "pipeline_version",
+      "player",
+      "position",
+      "source",
+      "st_pct",
+      "st_snaps",
+      "team",
+      "week"
+    ],
+    "dtypes": {
+      ".progress": "Boolean",
+      "defense_pct": "Float64",
+      "defense_snaps": "Float64",
+      "game_id": "String",
+      "game_type": "String",
+      "offense_pct": "Float64",
+      "offense_snaps": "Float64",
+      "opponent": "String",
+      "pfr_game_id": "String",
+      "pfr_player_id": "String",
+      "pipeline_version": "String",
+      "player": "String",
+      "position": "String",
+      "source": "String",
+      "st_pct": "Float64",
+      "st_snaps": "Float64",
+      "team": "String",
+      "week": "Int32"
+    },
+    "key_nulls": {
+      "week": 0,
+      "team": 0
+    },
+    "week_min": 1,
+    "week_max": 21
+  }
+}

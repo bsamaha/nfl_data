@@ -1,0 +1,889 @@
+{
+  "schedules": {
+    "last_ingest_utc": "",
+    "rows_last_batch": 7263,
+    "changed_partitions": [
+      "season=1999",
+      "season=2000",
+      "season=2001",
+      "season=2002",
+      "season=2003",
+      "season=2004",
+      "season=2005",
+      "season=2006",
+      "season=2007",
+      "season=2008",
+      "season=2009",
+      "season=2010",
+      "season=2011",
+      "season=2012",
+      "season=2013",
+      "season=2014",
+      "season=2015",
+      "season=2016",
+      "season=2017",
+      "season=2018",
+      "season=2019",
+      "season=2020",
+      "season=2021",
+      "season=2022",
+      "season=2023",
+      "season=2024",
+      "season=2025"
+    ],
+    "partitions": {
+      "season=1999": {
+        "row_count": 259,
+        "sha256_fingerprint": "be2ea2b19a039e33e013f756f37cc6e729b00d8799a4b1122899bac7a1846236",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2000": {
+        "row_count": 259,
+        "sha256_fingerprint": "97952898e030d0592dd4ad5109756db7e339d631fb2268408eb9207e301b0980",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2001": {
+        "row_count": 259,
+        "sha256_fingerprint": "f267aff6c76f343d0ee94b7d7d76a4c853ed56965fa5a70385360c1c62dac94d",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2002": {
+        "row_count": 267,
+        "sha256_fingerprint": "3f16160d42e4dbd8b2e402ea017e122a2b8c6e6891a40bd1f0aec4b651b5067d",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2003": {
+        "row_count": 267,
+        "sha256_fingerprint": "99e5d5f451d7b6b40906804642b96523f50df89573cf5c4e94411fa68d8a7b79",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2004": {
+        "row_count": 267,
+        "sha256_fingerprint": "483cf9d570816e952c113a0f977061500ce44507956a259e1600aa379079c88d",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2005": {
+        "row_count": 267,
+        "sha256_fingerprint": "b40bab72216b9181692bb9ccb02cc6febf9b65e08a08a649b1bd3195ef73da67",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2006": {
+        "row_count": 267,
+        "sha256_fingerprint": "45a2052b65aa6668c922b43828d9fbea59cf0dea853287602f9464248f21b045",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2007": {
+        "row_count": 267,
+        "sha256_fingerprint": "57fd79c0bfa8c850c509a5e00f465e197e02fa0dc46b8a6010c26877b26b4c86",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2008": {
+        "row_count": 267,
+        "sha256_fingerprint": "6e8f601bf9591d3b3d312de8d8b9961324ea3d13651a88a09dc799a19bfc6136",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2009": {
+        "row_count": 267,
+        "sha256_fingerprint": "749d6403eef74c389965ecc40b0cb9c0d6dcd266415f5ef6a1bdfbc4aad5dd68",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2010": {
+        "row_count": 267,
+        "sha256_fingerprint": "6ab10e3bd7aaaa7540a6fe8577b48908fb0ae0570334980215fa90182eaafb8e",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2011": {
+        "row_count": 267,
+        "sha256_fingerprint": "a815a3aa5e98002ffbc86d18691de07fe880bcfdef633857343b50f10dae3d16",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2012": {
+        "row_count": 267,
+        "sha256_fingerprint": "8a103359dd5335ff3cbca99cafb6522b9ad1835374f9c65ba0b60ea9b12ff9b2",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2013": {
+        "row_count": 267,
+        "sha256_fingerprint": "a0e0170aacbb527ef3521b5b4ca68eb9a0a9ad3223321ab87fbc3371190bcc3b",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2014": {
+        "row_count": 267,
+        "sha256_fingerprint": "67056eabc201dd1a73d4ba4e792dda26310e4ac6b95f092c5c61c920ad5e9cf7",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2015": {
+        "row_count": 267,
+        "sha256_fingerprint": "0ed0ae624ac1e81790fb7c28cc51f901f4b7e34a1b6ac2ddac51d55871699b58",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2016": {
+        "row_count": 267,
+        "sha256_fingerprint": "ef2ff8b8b927e847a7a259149a03203b506612676e5ed0c7a47011e796d291f5",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2017": {
+        "row_count": 267,
+        "sha256_fingerprint": "d76231c319fe5a58038d1afadf01145ccc0ffc762ac3fdc048f244f674a9a25a",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2018": {
+        "row_count": 267,
+        "sha256_fingerprint": "7283cf723d0fa79699f222544e959bfd589217c20168a90d9980cb964ed4b4b9",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2019": {
+        "row_count": 267,
+        "sha256_fingerprint": "eef558a08c0f35b5e623b8cd3eb5eb2ed0e1429be35ce7168552ef428d18db50",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2020": {
+        "row_count": 269,
+        "sha256_fingerprint": "9fdb4d9baa34edab826d17ba8c73ca6eb411c31721d6d0fced9199faf9265d08",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2021": {
+        "row_count": 285,
+        "sha256_fingerprint": "41aa7605de080e0cba22e255df7dc3bfa5b4a12bac3d5bbf2404eeef1344be44",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2022": {
+        "row_count": 284,
+        "sha256_fingerprint": "6c41d81458053ba0345a65767a66569e60d60057468aadd05eedb7ca6ae1cd87",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2023": {
+        "row_count": 285,
+        "sha256_fingerprint": "3e7b3705addde162c7005f19f579e4a8ce1ac63c9613d52ed15ac3145fd32c22",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2024": {
+        "row_count": 285,
+        "sha256_fingerprint": "756d3e467852ba4b6ad178eb0eb892fe3d965862dedc22cd5e852131f8000de7",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2025": {
+        "row_count": 272,
+        "sha256_fingerprint": "2c4f26739959214890686915d0e50665677a8b06428c3de2568aa634c1175041",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      }
+    }
+  },
+  "pbp": {
+    "last_ingest_utc": "2025-08-16T19:41:25.446090+00:00",
+    "rows_last_batch": 49492,
+    "changed_partitions": [
+      "year=2024"
+    ],
+    "partitions": {}
+  },
+  "weekly": {
+    "last_ingest_utc": "2025-08-16T23:05:06.004100+00:00",
+    "rows_last_batch": 0,
+    "changed_partitions": [],
+    "partitions": {
+      "season=1999": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2000": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2001": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2002": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2003": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2004": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2005": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2006": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2007": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2008": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2009": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2010": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2011": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2012": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2013": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2014": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2015": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2016": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2017": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2018": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2019": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2020": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2021": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2022": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2023": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2024": {
+        "row_count": 0,
+        "sha256_fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      }
+    }
+  },
+  "rosters": {
+    "last_ingest_utc": "2025-08-16T23:24:03.675562+00:00",
+    "rows_last_batch": 841955,
+    "changed_partitions": [
+      "season=2002",
+      "season=2003",
+      "season=2004",
+      "season=2005",
+      "season=2006",
+      "season=2007",
+      "season=2008",
+      "season=2009",
+      "season=2010",
+      "season=2011",
+      "season=2012",
+      "season=2013",
+      "season=2014",
+      "season=2015",
+      "season=2016",
+      "season=2017",
+      "season=2018",
+      "season=2019",
+      "season=2020",
+      "season=2021",
+      "season=2022",
+      "season=2023",
+      "season=2024"
+    ],
+    "partitions": {
+      "season=2002": {
+        "row_count": 30182,
+        "sha256_fingerprint": "0155ed85a09df26b6b2d25d47284c893608c01c9ab5edda9203b04fc9af67c36",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2003": {
+        "row_count": 30175,
+        "sha256_fingerprint": "3621cee5304ee3d46f63a94dad6ab266dbc2e9647b123d6559c2167caad6cd23",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2004": {
+        "row_count": 30173,
+        "sha256_fingerprint": "42c2ea9f1fa8c630899d8bf9eca5e6bca93a741eba500ff733daf1f2145b8af5",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2005": {
+        "row_count": 30166,
+        "sha256_fingerprint": "cde283e90b3ebfd1bc9882465724c41c62a71766543f7cf56c5073c57f5a192f",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2006": {
+        "row_count": 30189,
+        "sha256_fingerprint": "de66cf146526fa4dc9ac8d57ebe3e7dfede5cc7267e08c65de272a5772560d70",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2007": {
+        "row_count": 30192,
+        "sha256_fingerprint": "81796dfac30141a4deb6bbe7cf38aa028391b19be7358db6508d377e8b64ae01",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2008": {
+        "row_count": 30196,
+        "sha256_fingerprint": "cbc842c9b02152035745995b1ae22b5115f3d1ce9b07d9d1ebca90b636ea40d4",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2009": {
+        "row_count": 30202,
+        "sha256_fingerprint": "01f5d9360099a47ce953ccc272c8e8fcbc4cbfed7e2d50c54a3a95c14dd2c0bb",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2010": {
+        "row_count": 30200,
+        "sha256_fingerprint": "ebb24d7fa4d67f9ecc3142a7ff0faa6d6f0ba9afbf2bfe2e342367074a4d68f2",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2011": {
+        "row_count": 30194,
+        "sha256_fingerprint": "78814adc9cb8a0907da9e0dbb6e9f2161af7f647347338048e87b7aac6d3a30f",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2012": {
+        "row_count": 30184,
+        "sha256_fingerprint": "4326aedfa9243d8e1a1d5a619fe08349c6bba9e8e264f0fb0339e5c57c5fa934",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2013": {
+        "row_count": 30183,
+        "sha256_fingerprint": "58a3c763a45c9e56fcc5cfac2752302dbf51bb1eea33f03f88f1de32e50f67ef",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2014": {
+        "row_count": 30195,
+        "sha256_fingerprint": "a4aee71b5fb605fb8f6180c7c4ca50f48f77797215253eb3062e52efbd5eb638",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2015": {
+        "row_count": 30201,
+        "sha256_fingerprint": "0f34fb8def16672f9d5cecba24867a032ea655fb59c05c32f496501caeff96e1",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2016": {
+        "row_count": 35020,
+        "sha256_fingerprint": "a22f6ee32f7529e0a8ff6ba1c9a98d15136340f001b070877f50b39908509e37",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2017": {
+        "row_count": 51321,
+        "sha256_fingerprint": "1aa6c81f907105e2587e7e144be28253a8fb67759314fd3d340863df8030037c",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2018": {
+        "row_count": 52200,
+        "sha256_fingerprint": "c42bc5de8673d1e366b4f9526abcdc83573e5a08cac6c43c072c0fefb1472690",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2019": {
+        "row_count": 51630,
+        "sha256_fingerprint": "e26800803d38b62f9ae1db3a9feea7dd55e51028752d87713a0fa9237b773b7f",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2020": {
+        "row_count": 44124,
+        "sha256_fingerprint": "131ddb4355e77bc22728aabf7852880f90756b97c6a1f271347ece8c127f2d3b",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2021": {
+        "row_count": 46670,
+        "sha256_fingerprint": "65077bb33b92753a99e6493468eddf69e9f961a6b3e4cbcc13ea77de2b8985e6",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2022": {
+        "row_count": 46136,
+        "sha256_fingerprint": "244bc1821822998c9648add48c3d94b939f6a9b6d53015296df16fe88f38cfd6",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2023": {
+        "row_count": 45650,
+        "sha256_fingerprint": "ad525afc3bd6de92f03ff18e69058d6f7d8cd8f07fb4f82049b7350899d7bf93",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2024": {
+        "row_count": 46572,
+        "sha256_fingerprint": "e56cba415bc4d34702e8c8b44860987c4267705be46b3ef9c53f085e5121f264",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      }
+    }
+  },
+  "injuries": {
+    "last_ingest_utc": "2025-08-16T23:04:50.673180+00:00",
+    "rows_last_batch": 84682,
+    "changed_partitions": [
+      "season=2009",
+      "season=2010",
+      "season=2011",
+      "season=2012",
+      "season=2013",
+      "season=2014",
+      "season=2015",
+      "season=2016",
+      "season=2017",
+      "season=2018",
+      "season=2019",
+      "season=2020",
+      "season=2021",
+      "season=2022",
+      "season=2023",
+      "season=2024"
+    ],
+    "partitions": {
+      "season=2012.0": {
+        "row_count": 70401
+      },
+      "season=2013.0": {
+        "row_count": 70401
+      },
+      "season=2014.0": {
+        "row_count": 70401
+      },
+      "season=2015.0": {
+        "row_count": 70401
+      },
+      "season=2016.0": {
+        "row_count": 70401
+      },
+      "season=2017.0": {
+        "row_count": 70401
+      },
+      "season=2018.0": {
+        "row_count": 70401
+      },
+      "season=2019.0": {
+        "row_count": 70401
+      },
+      "season=2020.0": {
+        "row_count": 70401
+      },
+      "season=2021.0": {
+        "row_count": 70401
+      },
+      "season=2022.0": {
+        "row_count": 70401
+      },
+      "season=2023.0": {
+        "row_count": 70401
+      },
+      "season=2024.0": {
+        "row_count": 70401
+      },
+      "season=2012": {
+        "row_count": 5533,
+        "sha256_fingerprint": "b3e5b6e074599fcd19a334fed5f6cefe873cb1e90d4642273e82900fc33cd405",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2013": {
+        "row_count": 5070,
+        "sha256_fingerprint": "2f1e1a7df7ee83a364653df14435e286acb31d8199bcc8e5e46c58e8e82d18fa",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2014": {
+        "row_count": 5078,
+        "sha256_fingerprint": "1e81517ff6796bbf4dc2d72474b67d02202fb158f83beb9bee64c368a7b135f8",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2015": {
+        "row_count": 5232,
+        "sha256_fingerprint": "33f953633a30f17417a50fb14a25f6d1e719b97e43f0b989683c487ba690114e",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2016": {
+        "row_count": 5115,
+        "sha256_fingerprint": "d98cd6a87cd3b905a8442f3c38361438c49ad7106069a256a8a598b5edeb891e",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2017": {
+        "row_count": 5104,
+        "sha256_fingerprint": "b2f305308065fe089875df5daf949cbe8df9c0cc935d90f1f474d36d7c1e44c1",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2018": {
+        "row_count": 5133,
+        "sha256_fingerprint": "6a5b871275d1d93d8b9ea53aad318063030998b7527fb57390bbc93977afd404",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2019": {
+        "row_count": 5392,
+        "sha256_fingerprint": "ce892b65c8e6aee352912eaac897ccbce760e70a7ed0fb939205daf555b85951",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2020": {
+        "row_count": 5661,
+        "sha256_fingerprint": "bef2d981cb3e794de1e40f96dd3db4c8c739d4049318631070eddaa897f7267e",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2021": {
+        "row_count": 5587,
+        "sha256_fingerprint": "0f94ca698c13c74f16779c836d3fca269ed3c6e98364b70fc4eeb9331fd2f56f",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2022": {
+        "row_count": 5682,
+        "sha256_fingerprint": "e323a6cde5be9b0f779280b04bb46643f3474354fd674b51e74db54b5c90f987",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2023": {
+        "row_count": 5599,
+        "sha256_fingerprint": "c4ba99838cc09b144c3a7e0a80b0c5c73a51e7b885f5a21f7052fd3686d328e0",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2024": {
+        "row_count": 6213,
+        "sha256_fingerprint": "cdd656da3b24a5833b1cc672810b57f182e6765972fd2888b118eb0ad8c15154",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2009": {
+        "row_count": 4821,
+        "sha256_fingerprint": "b19211212577457fa643cff9dfa7b459c41bf62ba1c12d791efa049ccf2ec687",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2010": {
+        "row_count": 4491,
+        "sha256_fingerprint": "e08a5490b48aadbfcdfa8481262761c0279703e97d69528305bc8fbc77d53443",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2011": {
+        "row_count": 4971,
+        "sha256_fingerprint": "3e438171114ec71ccdf7e1889800a92d6053b61583b621620f1cc72ca3decd79",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      }
+    }
+  },
+  "depth_charts": {
+    "last_ingest_utc": "2025-08-16T22:52:42.715543+00:00",
+    "rows_last_batch": 476152,
+    "changed_partitions": [
+      "season=2012",
+      "season=2013",
+      "season=2014",
+      "season=2015",
+      "season=2016",
+      "season=2017",
+      "season=2018",
+      "season=2019",
+      "season=2020",
+      "season=2021",
+      "season=2022",
+      "season=2023",
+      "season=2024"
+    ],
+    "partitions": {
+      "season=2012": {
+        "row_count": 478,
+        "sha256_fingerprint": "d3618ea2b334a6d9f8eff97b5237b4b9db3a1bf48b554c01b41d7baa17277d5d",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2013": {
+        "row_count": 479,
+        "sha256_fingerprint": "38c4ecedc42c71840e0fd5b1006f2a265a360474ddab2c23f6ab41a7551cf1cd",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2014": {
+        "row_count": 474,
+        "sha256_fingerprint": "e1e07320160fc236c504e134d59b8ed236e6fe3967072c73126bd0800eb42380",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2015": {
+        "row_count": 463,
+        "sha256_fingerprint": "20d564857e6b53c0edba56925180eb7eaa754edd547680259591c8d3907640d7",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2016": {
+        "row_count": 450,
+        "sha256_fingerprint": "9a3c15f3a1e165352d88c39205dbcf6f2f296f1ff2b50bd7bd7909398f315b1f",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2017": {
+        "row_count": 433,
+        "sha256_fingerprint": "432881768aff237aa47fc8f37ebf21efd0927892d3df8c3a723c810a4ceb5514",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2018": {
+        "row_count": 454,
+        "sha256_fingerprint": "04e2a15c92f89f3de73b6552affe550c2da3350bb52991a1c3537228ebdf01d6",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2019": {
+        "row_count": 457,
+        "sha256_fingerprint": "22d1a40d223c9deb8339710376e61436094fae8e0347ea7c450e5aa97077d88a",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2020": {
+        "row_count": 459,
+        "sha256_fingerprint": "4efaebff52c95886b2dd9a8b6f02eacbd9ba809522b296e697251aba33952d0e",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2021": {
+        "row_count": 482,
+        "sha256_fingerprint": "a1bbdb6d97ee0150be7bf5247f4b690554439fd22e8bd1af2563690c21f1c346",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2022": {
+        "row_count": 480,
+        "sha256_fingerprint": "2524171c12b7e9a6f86e309bef8c2cc93cbcbed75d892a37315be46e0c185f00",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2023": {
+        "row_count": 467,
+        "sha256_fingerprint": "011d80941b4f7d0ff03197176173647f1c185f77cfe0f93f22e763f634fa8107",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2024": {
+        "row_count": 451,
+        "sha256_fingerprint": "418089273ed267e5111e85749974bfe7c48d42e64fd7774c89f0b53c1e63f91f",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      }
+    }
+  },
+  "snap_counts": {
+    "last_ingest_utc": "2025-08-16T23:04:51.015290+00:00",
+    "rows_last_batch": 6500,
+    "changed_partitions": [
+      "season=2013",
+      "season=2014",
+      "season=2015",
+      "season=2016",
+      "season=2017",
+      "season=2018",
+      "season=2019",
+      "season=2020",
+      "season=2021",
+      "season=2022",
+      "season=2023",
+      "season=2024"
+    ],
+    "partitions": {
+      "season=2013": {
+        "row_count": 534,
+        "sha256_fingerprint": "9613c2f7ce322f0a4fa52c32ee81734a812f0ff2b149a0db1c97bb458e03f249",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2014": {
+        "row_count": 534,
+        "sha256_fingerprint": "e1d4646c1beb54538c863486f1674704b76202ba5237194650b2eb09d100706a",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2015": {
+        "row_count": 534,
+        "sha256_fingerprint": "9bfe8b64cf8c8610f8444a24b427027657b986af65102c0c8b142b970f866fd3",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2016": {
+        "row_count": 534,
+        "sha256_fingerprint": "2e9dbace47f2917c89382be7cac9b8f56bcff6d2809caf9ffa6024da371d02c6",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2017": {
+        "row_count": 534,
+        "sha256_fingerprint": "4a27f19968a02da1698bb0156937ffd71c718918457b9f194b73620f66c49db5",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2018": {
+        "row_count": 534,
+        "sha256_fingerprint": "9bdc633a14d3363b6c29ed81d9168039fa0a41f759c6bdfffb37187542c5b285",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2019": {
+        "row_count": 480,
+        "sha256_fingerprint": "2b9f423ab1c1117838f7dfcf58981ac3a7fb32804d33969ef7255cd0ed6979c3",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2020": {
+        "row_count": 538,
+        "sha256_fingerprint": "0d6beef141a0839683d4816f9eebf9560843c843bde468dd42753db9bb9d6260",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2021": {
+        "row_count": 570,
+        "sha256_fingerprint": "d5651ad132a0b90f644dcf86e72e9e67a13c3149a1cd159285d40ae90d08094c",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2022": {
+        "row_count": 568,
+        "sha256_fingerprint": "1f0ce406ec8cbf40c2e6f6c7a0562508bd0108c8f2899978479f142f61ae8fcf",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2023": {
+        "row_count": 570,
+        "sha256_fingerprint": "d9882e77cf62d93876bedf96b646ba9d12c74f3f3d0830e2b7e2760f0497fbd4",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2024": {
+        "row_count": 570,
+        "sha256_fingerprint": "046d7d6f7f7d13285181b12aa3d86df7a49b0da35028e7bdca476c9f3b1045b0",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      }
+    }
+  }
+}

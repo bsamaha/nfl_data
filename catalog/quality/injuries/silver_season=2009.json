@@ -1,0 +1,54 @@
+{
+  "dataset": "injuries",
+  "layer": "silver",
+  "partition": "season=2009",
+  "metrics": {
+    "rows": 4821,
+    "num_columns": 17,
+    "columns": [
+      "game_type",
+      "team",
+      "week",
+      "player_id",
+      "position",
+      "full_name",
+      "first_name",
+      "last_name",
+      "report_primary_injury",
+      "report_secondary_injury",
+      "report_status",
+      "practice_primary_injury",
+      "practice_secondary_injury",
+      "practice_status",
+      "date_modified",
+      "source",
+      "pipeline_version"
+    ],
+    "dtypes": {
+      "game_type": "String",
+      "team": "String",
+      "week": "Int64",
+      "player_id": "String",
+      "position": "String",
+      "full_name": "String",
+      "first_name": "String",
+      "last_name": "String",
+      "report_primary_injury": "String",
+      "report_secondary_injury": "String",
+      "report_status": "String",
+      "practice_primary_injury": "String",
+      "practice_secondary_injury": "String",
+      "practice_status": "String",
+      "date_modified": "Datetime(time_unit='us', time_zone='UTC')",
+      "source": "String",
+      "pipeline_version": "String"
+    },
+    "key_nulls": {
+      "week": 0,
+      "team": 0,
+      "player_id": 0
+    },
+    "week_min": 1,
+    "week_max": 21
+  }
+}
