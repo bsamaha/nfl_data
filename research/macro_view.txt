@@ -1,0 +1,273 @@
+NFL Macro Environment, Tier Dynamics & Trades (nflverse-first)
+1) Purpose & Scope
+
+Goal: Describe how the NFL’s scoring environment evolves (plays, points, PROE, pace, explosive plays, indoor/outdoor) and how that translates into fantasy production distribution (position shares and 12-player tiers), plus how trades ebb and flow across Offseason / Preseason Games / Regular Season.
+
+Horizon: Last 10–15 seasons; annual refresh (weekly resolution where useful).
+
+Outputs: Executive brief, figure pack, tidy metric tables, methods appendix. Neutral, descriptive, reproducible.
+
+2) Core Questions (what we’ll answer)
+A) Scoring Environment & Pace
+
+Plays/Game: Are offensive plays per game rising or falling? What’s the team dispersion (IQR)?
+
+Points/Game & Scoring Mix: Trend in PPG; mix of TDs/FGs/2-pt tries.
+
+Indoor vs Outdoor: Gap and trend in PPG, EPA/play, pace, explosive rates by roof.
+
+EPA/play (overall, pass, rush): League trends; segmentation around rule/era breakpoints.
+
+Pass Tendency vs Expectation (PROE): League trend and team dispersion; early-downs & neutral filters.
+
+Pace (sec/play): Neutral vs all-situation; no-huddle and shotgun rates.
+
+Explosive Plays: Rates and share of EPA from pass ≥20y and rush ≥10/15y.
+
+Red-Zone Environment: RZ play share, RZ EPA/play, goal-to-go TD rate; pass mix.
+
+Passing Structure (context): aDOT, play-action, screens (descriptive only).
+
+E) Calendar & Shocks
+
+Bye Weeks: Pre- vs post-bye changes in EPA/PROE/pace/explosives.
+
+Short Week (TNF ≤4 rest) & Mini-Bye (post-TNF): Game-day and following-game effects.
+
+MNF & Next-Week Short Rest: Effects on pace/efficiency.
+
+International Games: Day-of and return-week effects.
+
+Late-Season Weather (Weeks ≥14): Interactions of temp/wind with roof; impact on PPG/EPA/PROE/pace.
+
+Overtime → Short Turnaround: Next-game drag vs baseline.
+
+Time-Slot Effects: Early vs late vs prime time differences (PPG/pace/PROE).
+
+P) Positional Shares & Tier Dynamics
+
+Position Shares by Season: QB/RB/WR/TE/FLEX shares over time.
+
+Within-Position Tiers (12-player bins): Tier1/2/3 share of position points and tier strength (median/mean).
+
+FLEX Depth: Pooled RB/WR/TE Top-12/24/36 shares; trend in concentration.
+
+T) Trades Cadence (3 Windows)
+
+Trades per Season: How many trades each year? Trend over time.
+
+Window Split: Offseason vs Preseason Games vs Regular Season shares by year.
+
+Regular-Season Timing: Weekly cadence (Week 1 → trade deadline); clustering near the deadline.
+
+Team Activity: Deals participated in per team by season and rolling multi-year windows.
+
+Package Size (Optional): Players (and picks, if parsable) per deal over time.
+
+3) Data (authoritative vs optional)
+
+nflverse core
+
+play_by_play: EPA, play type, timing, state (down/distance/yardline/score), aDOT/air_yards, shotgun/no_huddle, kneel/spike flags, game/team IDs, season/week.
+
+schedules / game info: date/time, roof (open/closed/retractable/outdoors), surface (grass/turf), temp/wind, stadium/site, game_type (PRE/REG/POST).
+
+Weekly player stats: PPR (or computable from base stats), position labels.
+
+nflverse transactions (for trades)
+
+Transactions table with transaction_date, player, team, transaction_type/description (used to detect and group trades).
+
+Optional (precision/controls)
+
+Hourly weather (NOAA/Meteostat), stadium lat/long & elevation (altitude flags), official trade deadlines by year, officials/crews, coaching history (HC/OC/DC changes), time-zone and travel miles, betting totals/spreads.
+
+4) Operational Definitions (lock these)
+
+General
+
+Qualifying plays: rush or pass attempts; exclude kneels/spikes; handle penalty-only rows consistently (document rule).
+
+Neutral situation: baseline = WP 0.35–0.65 AND score diff −7..+7 on 1st–2nd downs, outside two-minute; robustness in appendix.
+
+Pace: offensive seconds / qualifying plays (neutral and all-situation).
+
+PROE: actual pass rate minus expected pass probability from a league logistic model on state (down, distance, yardline, time remaining, score, shotgun, no-huddle, weather/roof).
+
+Explosive thresholds: pass ≥20 yards; rush ≥10 and ≥15 yards (report both; primary text uses 10 for rush).
+
+Indoor/Outdoor: roof ∈ {closed, retractable-closed} = indoor; open/outdoors = outdoor; retractable shown as separate facet if N allows.
+
+Positions & Tiers
+
+Positions tracked: QB/RB/WR/TE; FLEX = RB+WR+TE union.
+
+Ranking metric: season PPR total (primary); sensitivity: per-17 scaling (min games threshold, default 8) and PPR per game.
+
+Tiers: 12-player bins within season × position (Tier1=1–12; Tier2=13–24; Tier3=25–36; tail tiers only if N≥8).
+Tie rules: total → per-game → snaps/routes (if available) → alphabetical (last resort).
+
+Trades (three windows)
+
+Season attribution: All trades from March 1 of year Y through end of February of year Y+1 belong to season Y (mirrors roster-build cycle).
+
+Windows per season Y (derived from schedules):
+
+Offseason: From March 1 through the day before the first PRE game.
+
+Preseason Games: From first PRE kickoff through the day before Week 1.
+
+Regular Season: From Week 1 kickoff through the trade deadline (inclusive).
+
+Trade deadline: use official timestamp by season (Optional dataset). If unavailable, use the standard Week-8 Tuesday 4:00pm ET heuristic, documented as such.
+
+Deal vs legs: Transactions are per player; we count deals.
+Grouping heuristic: group same-day transactions by the set of teams involved (parsed from text when possible) to form a trade_id. Note limitations (same teams trading multiple distinct deals the same day).
+
+5) Methods (how we’ll answer & summarize)
+A) Environment & Pace
+
+Plays/Game & PPG: Aggregate to team-game → league-week → season; report means with team dispersion (IQR).
+Viz: weekly lines + seasonal dots; ribbon for dispersion.
+
+Indoor vs Outdoor: Split aggregates by roof; run simple OLS with season fixed effects and weather controls to estimate Δ (PPG, EPA/play, pace, explosive rates).
+Viz: side-by-side bars per season; partial-effect dot plot with 95% CIs.
+
+EPA/play: Weekly league lines (overall/pass/rush); segmented regression for breakpoints; annotate major rule changes (descriptive only).
+
+PROE: Fit league logistic model on PBP state; compute team-game PROE; aggregate to league-week mean and team dispersion.
+Viz: league line + dispersion ribbon; appendix caterpillar by team-season.
+
+Pace & Tempo Traits: sec/play (neutral & all), no-huddle and shotgun rates over time.
+Viz: multi-line.
+
+Explosives: Rates and EPA share for explosive passes/runs; optional aDOT bands.
+Viz: two-panel lines (rate; EPA share).
+
+Red Zone: RZ play share, RZ EPA/play, goal-to-go TD rate; pass mix.
+Viz: stacked bars & lines.
+
+E) Calendar & Shocks
+
+Byes, Short Week, Mini-Bye, MNF, International, Late-Season Weather, OT→Short Turnaround, Time-Slot:
+Design: team-level event studies with windows (e.g., −2..+2 games), matched on opponent strength & venue; regressions with season FE and clustered SEs (team or game).
+Viz: Δ vs baseline bars with CIs; facet by event type; partial-effect lines for weather interactions.
+
+P) Positional Shares & Tiers
+
+Position Shares: Sum season PPR by position; compute shares.
+Viz: stacked area by season.
+
+Tiers: Rank by season PPR; compute tier share of position points, tier median/mean (plus per-game and per-17 sensitivity).
+Viz: tier share lines; tier median lines with IQR ribbons.
+
+FLEX Depth: Pool RB/WR/TE; Top-12/24/36 shares with trend lines.
+
+T) Trades Cadence (3 windows)
+
+Detection & Grouping: Filter transaction records to trades; group per trade_id (teams + date).
+
+Window Labeling: Using schedules boundaries, assign Offseason, Preseason Games, Regular Season.
+
+Yearly Counts & Shares: For each season: totals and window shares.
+
+Regular-Season Weekly Cadence: Count trades by season week (Week 1→deadline); show clustering near deadline.
+
+Team Activity: Deals participated per team by season and rolling 3-year.
+Viz: stacked yearly bars (three windows), weekly histogram to deadline, team leaderboard.
+
+(Optional) Package Size: Players (and picks, if parsable) per deal; trend over time.
+
+6) KPIs (report these plainly)
+
+Environment: Plays/Game, PPG, EPA/play (all/pass/rush), PROE (mean & dispersion), Pace (neutral/all), No-Huddle/Shotgun rates, Explosive rates & EPA share, RZ EPA/play & goal-to-go TD%.
+
+Indoor/Outdoor deltas: ΔPPG, ΔEPA/play, Δpace (with CIs).
+
+Calendar effects: Event-study Δ in EPA/PROE/pace/explosives (with CIs).
+
+Shares & Tiers: Position shares; Tier1/2/3 shares and medians; FLEX Top-12/24/36 shares.
+
+Trades: Trades per season; window shares (Offseason/Preseason/Regular); in-season weekly cadence; team activity.
+
+7) Visualization Plan (concise pack)
+
+Plays & Points (weekly lines, seasonal markers, dispersion ribbon)
+
+EPA/play (overall/pass/rush) with breakpoints
+
+PROE trend + team dispersion ribbon
+
+Pace (neutral vs all) + No-Huddle/Shotgun
+
+Explosive rates & EPA share (pass/rush)
+
+Indoor vs Outdoor effects (bars + partial-effect dots)
+
+Calendar event studies (facets)
+
+Position shares (stacked area)
+
+Tier shares & tier medians (lines + ribbons)
+
+Trades: stacked bars by Offseason/Preseason/Regular per season; in-season weekly cadence; team leaderboard
+
+8) Tables (deliverable schema)
+
+league_week_metrics.parquet: season, week, plays_pg, ppg, epa_all, epa_pass, epa_rush, proe_mean, proe_iqr, sec_per_play_neutral, sec_per_play_all, no_huddle_rate, shotgun_rate, explosive_pass_rate, explosive_rush10_rate, explosive_rush15_rate, explosive_epa_share_pass, explosive_epa_share_rush, roof/surface splits.
+
+pos_tier_shares.csv: season, position, tier (1..), share, mean_pts, median_pts, iqr_pts, top12/24/36 flags.
+
+flex_tier_shares.csv: season, tier, share, mean/median.
+
+calendar_effects.csv: event_type, outcome, effect, ci_low, ci_high, N.
+
+trades_by_season.csv: season, trades_total, trades_offseason, trades_preseason, trades_regular, share_offseason, share_preseason, share_regular.
+
+trades_inseason_by_week.csv: season, week, trades.
+
+team_trades_by_season.csv: season, team, deals_participated, (optional) deals_as_buyer.
+
+trade_sizes.csv (Optional): season, trade_id, players_moved, (optional) picks_moved.
+
+9) QA & Acceptance Criteria
+
+Shares (position & tier) sum to 1.00 ± 0.001 per season; FLEX shares consistent.
+
+Neutral filters sensitivity (WP band, score band) does not flip primary trend directions.
+
+Indoor/outdoor and calendar effects reported with 95% CIs and sample sizes.
+
+Trades: (offseason + preseason + regular) = total per season; no in-season trade after the deadline; deduping validated on high-volume days.
+
+All figures render for every season; captions list exclusions and definitions.
+
+10) Risks & Mitigations
+
+Trade grouping ambiguity: Same-day, same teams → use team-set + date hash; flag and manually review top 10 busiest days.
+
+Deadline precision: Prefer official per-season timestamps (Optional); otherwise clearly label Week-8 heuristic.
+
+Weather coarseness: Stadium-level conditions → keep main on roof/temp/wind; add hourly weather for key checks (Optional).
+
+Era comparability (17th game): Include per-17 sensitivity and annotate 2021.
+
+Explosive threshold choice: Report rush ≥10 and ≥15; confirm conclusions robust.
+
+11) Appendix: Key Definitions & Formulae
+
+EPA/play: mean EPA over qualifying plays; separate pass vs rush.
+
+PROE: PROE = PassRate_actual − E[Pass|state] (logistic on state variables).
+
+Pace: sec_per_play = offensive_seconds / qualifying_plays.
+
+Explosive rates: explosive_pass_rate = 1{gain ≥20y}/pass_plays; explosive_rush10_rate = 1{gain ≥10y}/rush_plays; report ≥15y variant.
+
+Position share: pos_share = points_pos / Σ(points_QB,RB,WR,TE) (season).
+
+Tier share (within position): tier_share = Σ points_tier / Σ points_position.
+
+FLEX shares: tiers computed on pooled RB/WR/TE.
+
+Trades windows: per §4; Regular Season ends at deadline (official per-year preferred).
