@@ -15,6 +15,14 @@ def _parse_years_arg(years: str) -> list[int]:
     return [int(x) for x in years.split(",") if x.strip()]
 
 
+def _with_const_col(df: pd.DataFrame, col: str, val: Any) -> pd.DataFrame:
+    """Add a constant column without causing pandas frame fragmentation."""
+    if col in df.columns:
+        return df
+    # Build a single-column frame and concat to avoid repeated insert operations
+    return pd.concat([df, pd.DataFrame({col: [val] * len(df)})], axis=1)
+
+
 def fetch_pbp(years: str, options: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     logger = structlog.get_logger(__name__)
     year_list = _parse_years_arg(years)
@@ -52,8 +60,7 @@ def fetch_pbp(years: str, options: Optional[Dict[str, Any]] = None) -> pd.DataFr
                     except Exception as exc3:
                         logger.error("pbp_fetch_failed", year=yr, error=str(exc3))
                         continue
-        if "year" not in df_y.columns:
-            df_y["year"] = yr
+        df_y = _with_const_col(df_y, "year", yr)
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No PBP data fetched for any requested year")
@@ -70,8 +77,7 @@ def fetch_schedules(years: str, options: Optional[Dict[str, Any]] = None) -> pd.
         except Exception as exc:
             logger.error("schedules_fetch_failed", year=yr, error=str(exc))
             continue
-        if "season" not in df_y.columns:
-            df_y["season"] = yr
+        df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No schedules data fetched for any requested year")
@@ -88,8 +94,7 @@ def fetch_weekly(years: str, options: Optional[Dict[str, Any]] = None) -> pd.Dat
         except Exception as exc:
             logger.error("weekly_fetch_failed", year=yr, error=str(exc))
             continue
-        if "season" not in df_y.columns:
-            df_y["season"] = yr
+        df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No weekly data fetched for any requested year")
@@ -112,8 +117,7 @@ def fetch_rosters(years: str, options: Optional[Dict[str, Any]] = None) -> pd.Da
         except Exception as exc:
             logger.error("rosters_fetch_failed", year=yr, error=str(exc))
             continue
-        if "season" not in df_y.columns:
-            df_y["season"] = yr
+        df_y = _with_const_col(df_y, "season", yr)
         # Normalize key and problematic dtypes for stable parquet writing
         if "week" in df_y.columns:
             df_y["week"] = pd.to_numeric(df_y["week"], errors="coerce").astype("Int64")
@@ -150,8 +154,7 @@ def fetch_injuries(years: str, options: Optional[Dict[str, Any]] = None) -> pd.D
         except Exception as exc:
             logger.error("injuries_fetch_failed", year=yr, error=str(exc))
             continue
-        if "season" not in df_y.columns:
-            df_y["season"] = yr
+        df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No injuries data fetched for any requested year")
@@ -171,8 +174,7 @@ def fetch_depth_charts(years: str, options: Optional[Dict[str, Any]] = None) -> 
         except Exception as exc:
             logger.error("depth_charts_fetch_failed", year=yr, error=str(exc))
             continue
-        if "season" not in df_y.columns:
-            df_y["season"] = yr
+        df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No depth_charts data fetched for any requested year")
@@ -192,14 +194,133 @@ def fetch_snap_counts(years: str, options: Optional[Dict[str, Any]] = None) -> p
         except Exception as exc:
             logger.error("snap_counts_fetch_failed", year=yr, error=str(exc))
             continue
-        if "season" not in df_y.columns:
-            df_y["season"] = yr
+        df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No snap_counts data fetched for any requested year")
     return pd.concat(frames, ignore_index=True, copy=False)
 
 
+def fetch_ngs_weekly(years: str, options: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    logger = structlog.get_logger(__name__)
+    year_list = _parse_years_arg(years)
+    stat_types: List[str] = list((options or {}).get("stat_types", ["passing", "rushing", "receiving"]))
+    frames: List[pd.DataFrame] = []
+    for s_type in stat_types:
+        for yr in year_list:
+            try:
+                df_y = nfl.import_ngs_data(s_type, years=[yr])
+            except Exception as exc:
+                logger.error("ngs_fetch_failed", stat_type=s_type, year=yr, error=str(exc))
+                continue
+            df_y = _with_const_col(df_y, "season", yr)
+            df_y = _with_const_col(df_y, "stat_type", s_type)
+            frames.append(df_y)
+    if not frames:
+        raise RuntimeError("No NGS data fetched for any requested year/stat_type")
+    return pd.concat(frames, ignore_index=True, copy=False)
+
+
+def fetch_pfr_weekly(years: str, options: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    logger = structlog.get_logger(__name__)
+    year_list = _parse_years_arg(years)
+    stat_types: List[str] = list((options or {}).get("stat_types", ["pass", "rush", "rec"]))
+    frames: List[pd.DataFrame] = []
+    for s_type in stat_types:
+        for yr in year_list:
+            try:
+                df_y = nfl.import_weekly_pfr(s_type, years=[yr])
+            except Exception as exc:
+                logger.error("pfr_weekly_fetch_failed", stat_type=s_type, year=yr, error=str(exc))
+                continue
+            df_y = _with_const_col(df_y, "season", yr)
+            df_y = _with_const_col(df_y, "stat_type", s_type)
+            frames.append(df_y)
+    if not frames:
+        raise RuntimeError("No PFR weekly data fetched for any requested year/stat_type")
+    return pd.concat(frames, ignore_index=True, copy=False)
+
+
+def fetch_pfr_seasonal(years: str, options: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    logger = structlog.get_logger(__name__)
+    year_list = _parse_years_arg(years)
+    stat_types: List[str] = list((options or {}).get("stat_types", ["pass", "rush", "rec"]))
+    frames: List[pd.DataFrame] = []
+    for s_type in stat_types:
+        for yr in year_list:
+            try:
+                df_y = nfl.import_seasonal_pfr(s_type, years=[yr])
+            except Exception as exc:
+                logger.error("pfr_seasonal_fetch_failed", stat_type=s_type, year=yr, error=str(exc))
+                continue
+            df_y = _with_const_col(df_y, "season", yr)
+            df_y = _with_const_col(df_y, "stat_type", s_type)
+            frames.append(df_y)
+    if not frames:
+        raise RuntimeError("No PFR seasonal data fetched for any requested year/stat_type")
+    return pd.concat(frames, ignore_index=True, copy=False)
+
+
+def fetch_ids(years: Optional[str] = None, options: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    logger = structlog.get_logger(__name__)
+    try:
+        df = nfl.import_ids()
+    except Exception as exc:
+        logger.error("ids_fetch_failed", error=str(exc))
+        raise
+    # Normalize common id columns to string for stable parquet schemas
+    for c in [
+        "gsis_id",
+        "pfr_id",
+        "pff_id",
+        "espn_id",
+        "sportradar_id",
+        "yahoo_id",
+        "rotowire_id",
+    ]:
+        if c in df.columns:
+            df[c] = df[c].astype(str)
+    return df
+
+
+def fetch_seasonal_rosters(years: str, options: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    logger = structlog.get_logger(__name__)
+    year_list = _parse_years_arg(years)
+    frames: List[pd.DataFrame] = []
+    for yr in year_list:
+        try:
+            df_y = nfl.import_seasonal_rosters([yr])
+        except Exception as exc:
+            logger.error("seasonal_rosters_fetch_failed", year=yr, error=str(exc))
+            continue
+        df_y = _with_const_col(df_y, "season", yr)
+        # Normalize id/name fields
+        if "player_id" not in df_y.columns and "gsis_id" in df_y.columns:
+            df_y["player_id"] = df_y["gsis_id"].astype(str)
+        # Cast jersey_number and numeric-like fields to strings to avoid dtype collisions across seasons
+        for c in ("full_name", "first_name", "last_name", "jersey_number"):
+            if c in df_y.columns:
+                df_y[c] = df_y[c].astype(str)
+        frames.append(df_y)
+    if not frames:
+        raise RuntimeError("No seasonal_rosters data fetched for any requested year")
+    return pd.concat(frames, ignore_index=True, copy=False)
+
+
+def fetch_players(options: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    logger = structlog.get_logger(__name__)
+    try:
+        df = nfl.import_players()
+    except Exception as exc:
+        logger.error("players_fetch_failed", error=str(exc))
+        raise
+    # Normalize key/id and name fields
+    if "gsis_id" in df.columns:
+        df["gsis_id"] = df["gsis_id"].astype(str)
+    for c in ("display_name", "first_name", "last_name", "full_name"):
+        if c in df.columns:
+            df[c] = df[c].astype(str)
+    return df
 def fetch_officials(years: str, options: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     logger = structlog.get_logger(__name__)
     year_list = _parse_years_arg(years)
@@ -210,8 +331,7 @@ def fetch_officials(years: str, options: Optional[Dict[str, Any]] = None) -> pd.
         except Exception as exc:
             logger.error("officials_fetch_failed", year=yr, error=str(exc))
             continue
-        if "season" not in df_y.columns:
-            df_y["season"] = yr
+        df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No officials data fetched for any requested year")
@@ -228,8 +348,7 @@ def fetch_win_totals(years: str, options: Optional[Dict[str, Any]] = None) -> pd
         except Exception as exc:
             logger.error("win_totals_fetch_failed", year=yr, error=str(exc))
             continue
-        if "season" not in df_y.columns:
-            df_y["season"] = yr
+        df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No win_totals data fetched for any requested year")
@@ -246,8 +365,7 @@ def fetch_scoring_lines(years: str, options: Optional[Dict[str, Any]] = None) ->
         except Exception as exc:
             logger.error("scoring_lines_fetch_failed", year=yr, error=str(exc))
             continue
-        if "season" not in df_y.columns:
-            df_y["season"] = yr
+        df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No scoring_lines data fetched for any requested year")
@@ -264,8 +382,7 @@ def fetch_draft_picks(years: str, options: Optional[Dict[str, Any]] = None) -> p
         except Exception as exc:
             logger.error("draft_picks_fetch_failed", year=yr, error=str(exc))
             continue
-        if "season" not in df_y.columns:
-            df_y["season"] = yr
+        df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No draft_picks data fetched for any requested year")
@@ -282,8 +399,7 @@ def fetch_combine(years: str, options: Optional[Dict[str, Any]] = None) -> pd.Da
         except Exception as exc:
             logger.error("combine_fetch_failed", year=yr, error=str(exc))
             continue
-        if "season" not in df_y.columns:
-            df_y["season"] = yr
+        df_y = _with_const_col(df_y, "season", yr)
         if "player_id" not in df_y.columns and "gsis_id" in df_y.columns:
             df_y["player_id"] = df_y["gsis_id"].astype(str)
         frames.append(df_y)

@@ -2,7 +2,7 @@ VENV=.venv
 PY=$(VENV)/bin/python
 PIP=$(VENV)/bin/pip
 
-.PHONY: venv install bootstrap update recache fmt
+.PHONY: venv install bootstrap update recache fmt app
 
 venv:
 	python -m venv $(VENV)
@@ -21,4 +21,7 @@ recache:
 
 fmt:
 	$(PY) -m black src || true
+
+app: install
+	$(VENV)/bin/streamlit run src/app_streamlit.py
 

@@ -12,4 +12,6 @@ structlog
 filelock
 orjson
 nfl_data_py
+streamlit
+altair
 

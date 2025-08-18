@@ -18,7 +18,14 @@ from .nflverse import (
     fetch_scoring_lines,
     fetch_draft_picks,
     fetch_combine,
+    fetch_ngs_weekly,
+    fetch_pfr_weekly,
+    fetch_pfr_seasonal,
+    fetch_ids,
+    fetch_seasonal_rosters,
+    fetch_players,
 )
+from .draftkings import fetch_dk_bestball
 
 
 def fetch_dataset_bootstrap(cfg: DatasetConfig, years: str) -> pd.DataFrame:
@@ -46,6 +53,20 @@ def fetch_dataset_bootstrap(cfg: DatasetConfig, years: str) -> pd.DataFrame:
         return fetch_draft_picks(years=years, options=cfg.options)
     if cfg.importer == "combine":
         return fetch_combine(years=years, options=cfg.options)
+    if cfg.importer == "dk_bestball":
+        return fetch_dk_bestball(options=cfg.options)
+    if cfg.importer == "ngs_weekly":
+        return fetch_ngs_weekly(years=years, options=cfg.options)
+    if cfg.importer == "pfr_weekly":
+        return fetch_pfr_weekly(years=years, options=cfg.options)
+    if cfg.importer == "pfr_seasonal":
+        return fetch_pfr_seasonal(years=years, options=cfg.options)
+    if cfg.importer == "ids":
+        return fetch_ids(options=cfg.options)
+    if cfg.importer == "seasonal_rosters":
+        return fetch_seasonal_rosters(years=years, options=cfg.options)
+    if cfg.importer == "players":
+        return fetch_players(options=cfg.options)
     raise NotImplementedError(f"Importer not implemented: {cfg.importer}")
 
 
@@ -76,5 +97,19 @@ def fetch_dataset_update(
         return fetch_draft_picks(years=str(season), options=cfg.options)
     if cfg.importer == "combine":
         return fetch_combine(years=str(season), options=cfg.options)
+    if cfg.importer == "dk_bestball":
+        return fetch_dk_bestball(options=cfg.options)
+    if cfg.importer == "ngs_weekly":
+        return fetch_ngs_weekly(years=str(season), options=cfg.options)
+    if cfg.importer == "pfr_weekly":
+        return fetch_pfr_weekly(years=str(season), options=cfg.options)
+    if cfg.importer == "pfr_seasonal":
+        return fetch_pfr_seasonal(years=str(season), options=cfg.options)
+    if cfg.importer == "ids":
+        return fetch_ids(options=cfg.options)
+    if cfg.importer == "seasonal_rosters":
+        return fetch_seasonal_rosters(years=str(season), options=cfg.options)
+    if cfg.importer == "players":
+        return fetch_players(options=cfg.options)
     raise NotImplementedError(f"Importer not implemented: {cfg.importer}")
 

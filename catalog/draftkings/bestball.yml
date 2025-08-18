@@ -1,0 +1,155 @@
+name: "DraftKings NFL Best Ball"
+version: "2025-04"
+source: "DraftKings Rules Page"
+
+scoring:
+  passing_td:
+    points: 4
+    notes: "Passing TD"
+  passing_yards:
+    points: 1
+    per_units: 25
+    per_yard: 0.04
+    units: "yards"
+    notes: "25 Passing Yards = 1 point"
+  passing_300_bonus:
+    bonus_points: 3
+    threshold: 300
+    units: "yards"
+    notes: "300+ Yard Passing Game"
+  interception:
+    points: -1
+    notes: "Interception thrown"
+  rushing_td:
+    points: 6
+    notes: "Rushing TD"
+  rushing_yards:
+    points: 1
+    per_units: 10
+    per_yard: 0.1
+    units: "yards"
+    notes: "10 Rushing Yards = 1 point"
+  rushing_100_bonus:
+    bonus_points: 3
+    threshold: 100
+    units: "yards"
+    notes: "100+ Yard Rushing Game"
+  receiving_td:
+    points: 6
+    notes: "Receiving TD"
+  receiving_yards:
+    points: 1
+    per_units: 10
+    per_yard: 0.1
+    units: "yards"
+    notes: "10 Receiving Yards = 1 point"
+  receiving_100_bonus:
+    bonus_points: 3
+    threshold: 100
+    units: "yards"
+    notes: "100+ Receiving Yard Game"
+  reception:
+    points: 1
+    notes: "Reception (PPR)"
+  return_td:
+    points: 6
+    types: ["punt", "kickoff", "field_goal"]
+    notes: "Punt/Kickoff/FG Return for TD"
+  fumble_lost:
+    points: -1
+    notes: "Fumble Lost"
+  two_point_conversion:
+    points: 2
+    modes: ["pass", "run", "catch"]
+    notes: "2 Pt Conversion (Pass, Run, or Catch)"
+  offensive_fumble_recovery_td:
+    points: 6
+    notes: "Offensive Fumble Recovery TD"
+
+lineup:
+  weekly_starters: 8
+  weekly_slots:
+    - slot: "QB"
+      count: 1
+      eligible_positions: ["QB"]
+    - slot: "RB"
+      count: 2
+      eligible_positions: ["RB"]
+    - slot: "WR"
+      count: 3
+      eligible_positions: ["WR"]
+    - slot: "TE"
+      count: 1
+      eligible_positions: ["TE"]
+    - slot: "FLEX"
+      count: 1
+      eligible_positions: ["RB", "WR", "TE"]
+
+roster:
+  total_slots: 20
+  bench_slots: 12
+  min_teams: 2
+  max_qb: 5
+  max_te: 5
+  position_caps_during_auto_draft:
+    QB: 3
+    RB: 6
+    WR: 8
+    TE: 3
+
+scoring_period:
+  week_window: "Thursday through following Wednesday"
+  multi_game_exception: "If a team plays twice in a period, only the first full game counts"
+
+draft:
+  fast_seconds_per_pick: 30
+  slow_default_hours_per_pick: 8
+  overnight: ["22:00-04:00 ET uses 10 hours"]
+  schedules:
+    - label: "2025 Early Bird 1"
+      start: "2025-04-21T10:00:00-04:00"
+      fast_seconds_per_pick: 30
+      slow_default_hours_per_pick: 1
+      overnight: ["22:00-04:00 ET = 10h", "04:00-10:00 ET = 8h"]
+    - label: "2025 Early Bird 2"
+      start: "2025-04-22T10:00:00-04:00"
+      fast_seconds_per_pick: 30
+      slow_default_hours_per_pick: 0.1667   # 10 minutes
+      overnight: ["22:00-04:00 ET = 10h", "04:00-10:00 ET = 8h"]
+    - label: "2025 Early Bird 3"
+      start: "2025-04-23T10:00:00-04:00"
+      fast_seconds_per_pick: 30
+      slow_default_hours_per_pick: 0.1667   # 10 minutes until 19:30, then 2 minutes
+      notes: "At 19:30 ET – move to 2 minutes/pick; no overnight period thereafter"
+    - label: "2025 Regular 1"
+      start: "2025-09-01T10:00:00-04:00"
+      fast_seconds_per_pick: 30
+      slow_default_hours_per_pick: 1
+      overnight: ["22:00-04:00 ET = 10h", "04:00-10:00 ET = 8h"]
+    - label: "2025 Regular 2"
+      start: "2025-09-02T10:00:00-04:00"
+      fast_seconds_per_pick: 30
+      slow_default_hours_per_pick: 0.1667
+      overnight: ["22:00-04:00 ET = 10h", "04:00-10:00 ET = 8h"]
+    - label: "2025 Regular 3"
+      start: "2025-09-03T10:00:00-04:00"
+      fast_seconds_per_pick: 30
+      slow_default_hours_per_pick: 0.0333   # 2 minutes
+      notes: "At 19:30 ET – move to 2 minutes/pick; no overnight period thereafter"
+
+tournaments:
+  rounds:
+    - round: 1
+      weeks: [1,2,3,4,5,6,7,8,9,10,11,12,13,14]
+    - round: 2
+      weeks: [15]
+    - round: 3
+      weeks: [16]
+    - round: 4
+      weeks: [17]
+  tie_breakers: |
+    Tie-breakers for advancing or wild-card spots are applied in order: highest single-week score in the round,
+    next-highest single-week, ..., then highest single-player score in the round (and next), then overall highest
+    score across completed rounds, then earliest draft slot.
+
+

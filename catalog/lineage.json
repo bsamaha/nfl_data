@@ -197,17 +197,68 @@
     }
   },
   "pbp": {
-    "last_ingest_utc": "2025-08-16T19:41:25.446090+00:00",
-    "rows_last_batch": 49492,
+    "last_ingest_utc": "2025-08-17T20:06:49.914302+00:00",
+    "rows_last_batch": 46136,
     "changed_partitions": [
-      "year=2024"
+      "year=1999"
     ],
-    "partitions": {}
+    "partitions": {
+      "year=1999": {
+        "row_count": 46136,
+        "sha256_fingerprint": "e3dfb432ad3fd56a31b7f96c77d6ec55ee5858cc44633a4de393496b6ce0b22c",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "year=2000": {
+        "row_count": 45491,
+        "sha256_fingerprint": "e6ab91ae0fbfc254a8bc0ab4168cb81457e9bfdd18f04451c632102713f805bb",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "year=2001": {
+        "row_count": 44969,
+        "sha256_fingerprint": "27be988f533e6aafb4c6fed04848b12eaada6ed8a0d351b32529b48b6b770c41",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "year=2002": {
+        "row_count": 47355,
+        "sha256_fingerprint": "e201a7137251245ca50b197f4d56ec87ef6c72818ff4fed17018a0a7182c76da",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "year=2003": {
+        "row_count": 46811,
+        "sha256_fingerprint": "edb15a93be6c21ea28627aa0e65be63e82e4288c8c19b86517b345900ff7258d",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "year=2004": {
+        "row_count": 46705,
+        "sha256_fingerprint": "af5e315f4679e7ae36fd1b886ce9bb751f7e3fee689a676de54aee1d42ebc3c2",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "year=2005": {
+        "row_count": 46823,
+        "sha256_fingerprint": "58f6ddd1bbfb7249871eace86f0c56134ad33c451bb536385446a7d93c8a05b4",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      }
+    }
   },
   "weekly": {
-    "last_ingest_utc": "2025-08-16T23:05:06.004100+00:00",
+    "last_ingest_utc": "2025-08-17T20:09:58.246864+00:00",
     "rows_last_batch": 0,
-    "changed_partitions": [],
+    "changed_partitions": [
+      "season=1999",
+      "season=2000",
+      "season=2001",
+      "season=2002",
+      "season=2003",
+      "season=2004",
+      "season=2005"
+    ],
     "partitions": {
       "season=1999": {
         "row_count": 0,
@@ -883,6 +934,159 @@
         "sha256_fingerprint": "046d7d6f7f7d13285181b12aa3d86df7a49b0da35028e7bdca476c9f3b1045b0",
         "max_ingested_at": null,
         "min_ingested_at": null
+      }
+    }
+  },
+  "dk_bestball": {
+    "last_ingest_utc": "2025-08-17T18:48:01.687717+00:00",
+    "rows_last_batch": 45,
+    "changed_partitions": [
+      "section=draft",
+      "section=lineup",
+      "section=roster",
+      "section=scoring",
+      "section=scoring_period",
+      "section=tournaments",
+      "section=tournaments_rounds"
+    ],
+    "partitions": {
+      "section=<NA>": {
+        "row_count": 45
+      },
+      "section=__HIVE_DEFAULT_PARTITION__": {
+        "row_count": 45,
+        "sha256_fingerprint": "ac0fd9f85b3f10d48eb367a59116ea16ac26976926dd2a31e4cfcbef048144bf",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "section=scoring": {
+        "row_count": 15,
+        "sha256_fingerprint": "e46a1955060e9fd67e667728c80d5eb868fcdc412a6b15b20d2725fce2817d03",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "section=lineup": {
+        "row_count": 5,
+        "sha256_fingerprint": "3f38556690ced0168267cf0eb7464d89fdfc46fd8296ac85fb0e22d3cdb7ac23",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "section=roster": {
+        "row_count": 9,
+        "sha256_fingerprint": "6934454926b6ceae18533793b733ff511d5e1645c515b98272a4ad2ff1f8d7fb",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "section=tournaments_rounds": {
+        "row_count": 4,
+        "sha256_fingerprint": "b5b5c2c9b44c378303106bff7833746fc9899dcf4133a3ad4f30806de1b86317",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "section=tournaments": {
+        "row_count": 1,
+        "sha256_fingerprint": "3b3f1c4cbc821252bcba7c18e48dc9045fd0f9b9291c1f4d9b8f3af77f2eabd1",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "section=scoring_period": {
+        "row_count": 2,
+        "sha256_fingerprint": "b489735f7e4e7045f2c1a122dd16cb430d2dfef8a14f591ed59bb2ec8f9d477c",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "section=draft": {
+        "row_count": 9,
+        "sha256_fingerprint": "39e93d05524b58ef53bf365ffb8bd2bd363888471f302742177cd50b7efd579c",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      }
+    }
+  },
+  "ids": {
+    "last_ingest_utc": "2025-08-17T19:11:22.893130+00:00",
+    "rows_last_batch": 7950,
+    "changed_partitions": [
+      ""
+    ],
+    "partitions": {
+      "all": {
+        "row_count": 7950,
+        "sha256_fingerprint": "a25a4ea55616f8ba60e83f44db4a50056ea4add76fcbacb8a7a0d0be082034f5",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "": {
+        "row_count": 0
+      }
+    }
+  },
+  "rosters_seasonal": {
+    "last_ingest_utc": "2025-08-17T20:03:41.592403+00:00",
+    "rows_last_batch": 14300,
+    "changed_partitions": [
+      "season=1999",
+      "season=2000",
+      "season=2001",
+      "season=2002",
+      "season=2003",
+      "season=2004",
+      "season=2005"
+    ],
+    "partitions": {
+      "season=1999": {
+        "row_count": 4066,
+        "sha256_fingerprint": "f0d78ed08b113b4a845a76d9995a1f1d6488c0b46368397d85d64d8ed96ba786",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2000": {
+        "row_count": 4092,
+        "sha256_fingerprint": "a2d43c245e5fb04e65ea783253dfdf7714b179f6ce5e7aca7932b4d8cadc8e77",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2001": {
+        "row_count": 4090,
+        "sha256_fingerprint": "06faf16939e50a99468f0095466af47adf0c447d59826eb5dc6d9743719630b7",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2002": {
+        "row_count": 4062,
+        "sha256_fingerprint": "c7ae88cfb367434061173897ce91d7fa642e8952cde651492e7897a2a331625e",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2003": {
+        "row_count": 4068,
+        "sha256_fingerprint": "7ee3e5612808f88271a8f710c19d37774a16e4b115d3da73f75eda5281e9e97f",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2004": {
+        "row_count": 4126,
+        "sha256_fingerprint": "af2619afd6025f88e5cf7a7460bbb0e9ba3ff9e463eed61abaa9c1371d62c21c",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2005": {
+        "row_count": 4096,
+        "sha256_fingerprint": "d70582d564b881ee030cd298c011b0eb1f5528c23bcbaee0b403dd1d446ea3ef",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      }
+    }
+  },
+  "players": {
+    "last_ingest_utc": "2025-08-17T19:55:32.567089+00:00",
+    "rows_last_batch": 24522,
+    "changed_partitions": [
+      "all"
+    ],
+    "partitions": {
+      "all": {
+        "row_count": 24522
       }
     }
   }

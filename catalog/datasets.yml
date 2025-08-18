@@ -40,6 +40,15 @@ datasets:
     sort_by: ["season","week","player_id","team"]
     max_rows_per_file: 1000000
 
+  rosters_seasonal:
+    importer: "seasonal_rosters"
+    years: "ALL"
+    partitions: ["season"]
+    key: ["season","player_id"]
+    enabled: true
+    sort_by: ["season","player_id"]
+    max_rows_per_file: 1000000
+
   injuries:
     importer: "injuries"
     years: "ALL"
@@ -112,3 +121,57 @@ datasets:
     sort_by: ["season","player_id"]
     max_rows_per_file: 200000
 
+
+  dk_bestball:
+    importer: "dk_bestball"
+    years: "ALL"
+    partitions: ["section"]
+    key: ["section","id"]
+    enabled: true
+    sort_by: ["section","id"]
+    max_rows_per_file: 10000
+
+  ngs_weekly:
+    importer: "ngs_weekly"
+    years: "ALL"
+    partitions: ["season","stat_type"]
+    key: ["season","week","player_id","stat_type"]
+    enabled: false
+    sort_by: ["season","week","player_id","stat_type"]
+    max_rows_per_file: 1000000
+
+  pfr_weekly:
+    importer: "pfr_weekly"
+    years: "ALL"
+    partitions: ["season","stat_type"]
+    key: ["season","week","player_id","stat_type"]
+    enabled: false
+    sort_by: ["season","week","player_id","stat_type"]
+    max_rows_per_file: 1000000
+
+  pfr_seasonal:
+    importer: "pfr_seasonal"
+    years: "ALL"
+    partitions: ["season","stat_type"]
+    key: ["season","player_id","stat_type"]
+    enabled: false
+    sort_by: ["season","player_id","stat_type"]
+    max_rows_per_file: 1000000
+
+  ids:
+    importer: "ids"
+    years: "ALL"
+    partitions: []
+    key: ["gsis_id","pfr_id"]
+    enabled: true
+    sort_by: []
+    max_rows_per_file: 200000
+
+  players:
+    importer: "players"
+    years: "ALL"
+    partitions: []
+    key: ["gsis_id"]
+    enabled: true
+    sort_by: []
+    max_rows_per_file: 100000

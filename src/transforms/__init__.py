@@ -42,7 +42,9 @@ def to_silver(dataset: str, df: pl.DataFrame) -> pl.DataFrame:
         # Ensure team column present if only recent_team exists
         if "team" not in df.columns and "recent_team" in df.columns:
             df = df.rename({"recent_team": "team"})
-        key_cols = [c for c in ["season", "week", "player_id", "team"] if c in df.columns]
+        # Use base keys that must be present; treat team as optional (older seasons may have null team)
+        base_keys = [c for c in ["season", "week", "player_id"] if c in df.columns]
+        key_cols = base_keys + (["team"] if "team" in df.columns else [])
     elif dataset == "rosters":
         # weekly rosters keyed by season/week/player/team
         if "team" not in df.columns and "recent_team" in df.columns:
@@ -62,12 +64,44 @@ def to_silver(dataset: str, df: pl.DataFrame) -> pl.DataFrame:
         if "player_id" not in df.columns and "gsis_id" in df.columns:
             df = df.rename({"gsis_id": "player_id"})
         key_cols = [c for c in ["season", "week", "team", "player_id"] if c in df.columns]
+    elif dataset == "dk_bestball":
+        # Simple static table; enforce keys
+        key_cols = [c for c in ["section", "id"] if c in df.columns]
+    elif dataset == "ngs_weekly":
+        # Partition by season, stat_type; ensure player_id string if present
+        if "player_id" in df.columns:
+            df = df.with_columns(pl.col("player_id").cast(pl.Utf8))
+        key_cols = [c for c in ["season", "week", "player_id", "stat_type"] if c in df.columns]
+    elif dataset == "pfr_weekly":
+        if "player_id" in df.columns:
+            df = df.with_columns(pl.col("player_id").cast(pl.Utf8))
+        key_cols = [c for c in ["season", "week", "player_id", "stat_type"] if c in df.columns]
+    elif dataset == "pfr_seasonal":
+        if "player_id" in df.columns:
+            df = df.with_columns(pl.col("player_id").cast(pl.Utf8))
+        key_cols = [c for c in ["season", "player_id", "stat_type"] if c in df.columns]
+    elif dataset == "ids":
+        # Deduplicate by primary ids
+        # Keep the most complete row (heuristic: prefer rows with more non-null fields)
+        cols = df.columns
+        df = df.with_columns([pl.sum_horizontal([pl.col(c).is_not_null().cast(pl.Int8) for c in cols]).alias("__nn")])
+        key_cols = [c for c in ["gsis_id", "pfr_id"] if c in df.columns]
+        df = df.sort("__nn", descending=True).unique(subset=key_cols, keep="first").drop(["__nn"]) if key_cols else df
+    elif dataset == "seasonal_rosters":
+        # Ensure player_id and name strings
+        if "player_id" in df.columns:
+            df = df.with_columns(pl.col("player_id").cast(pl.Utf8))
+        for c in ("full_name", "first_name", "last_name"):
+            if c in df.columns:
+                df = df.with_columns(pl.col(c).cast(pl.Utf8))
+        key_cols = [c for c in ["season","player_id"] if c in df.columns]
     else:
         return df
 
     # Dedupe by keys, prefer newer if ingested_at exists; otherwise stable first occurrence
-    # Drop rows missing key columns
-    df = df.drop_nulls(subset=key_cols)
+    # Drop rows missing required base keys only (do not require optional keys like team)
+    required_keys = [c for c in key_cols if c in ("season", "week", "player_id")] or key_cols
+    df = df.drop_nulls(subset=required_keys)
     # Upcast any remaining Null-typed columns to Utf8 to avoid schema merge issues across files
     null_cols = [name for name, dtype in df.schema.items() if dtype == pl.Null]
     if null_cols:

@@ -77,6 +77,19 @@ def validate_bronze(dataset: str, df: pl.DataFrame) -> None:
         pass
     elif dataset == "snap_counts":
         pass
+    elif dataset == "dk_bestball":
+        # Static config; minimal checks
+        pass
+    elif dataset == "ngs_weekly":
+        pass
+    elif dataset == "pfr_weekly":
+        pass
+    elif dataset == "pfr_seasonal":
+        pass
+    elif dataset == "ids":
+        pass
+    elif dataset == "seasonal_rosters":
+        pass
 
 
 def validate_silver(dataset: str, df: pl.DataFrame) -> None:
@@ -101,4 +114,22 @@ def validate_silver(dataset: str, df: pl.DataFrame) -> None:
     elif dataset == "snap_counts":
         required = ["season", "week", "team", "player_id"]
         assert all(c in df.columns for c in required), "snap_counts silver missing required key columns"
+    elif dataset == "dk_bestball":
+        # Ensure partition and key columns exist
+        assert all(c in df.columns for c in ["section", "id"]), "dk_bestball silver missing key columns"
+    elif dataset == "ngs_weekly":
+        required = ["season", "week", "stat_type"]
+        assert all(c in df.columns for c in required), "ngs_weekly silver missing required columns"
+    elif dataset == "pfr_weekly":
+        required = ["season", "week", "stat_type"]
+        assert all(c in df.columns for c in required), "pfr_weekly silver missing required columns"
+    elif dataset == "pfr_seasonal":
+        required = ["season", "stat_type"]
+        assert all(c in df.columns for c in required), "pfr_seasonal silver missing required columns"
+    elif dataset == "ids":
+        required_any = ["gsis_id", "pfr_id"]
+        assert any(c in df.columns for c in required_any), "ids silver missing gsis_id/pfr_id columns"
+    elif dataset == "seasonal_rosters":
+        required = ["season","player_id"]
+        assert all(c in df.columns for c in required), "seasonal_rosters silver missing required key columns"
 

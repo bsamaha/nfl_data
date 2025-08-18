@@ -19,7 +19,9 @@ class PartitionStats:
 def compute_sha256_for_keys(rows: List[str]) -> str:
     h = hashlib.sha256()
     for row in rows:
-        h.update(row.encode("utf-8"))
+        if row is None:
+            continue
+        h.update(str(row).encode("utf-8"))
     return h.hexdigest()
 
 
