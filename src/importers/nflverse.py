@@ -118,18 +118,61 @@ def fetch_weekly(years: str, options: Optional[Dict[str, Any]] = None) -> pd.Dat
                 df_y = None
                 break
         if df_y is None:
-            # Fallback: try direct DuckDB read from github release known path for weekly (stats_player)
+            # Fallback: derive minimal weekly from PBP + rosters for the season
             try:
-                import duckdb
-                # nflverse reorganized: attempt both legacy and new naming
-                url_new = f"https://github.com/nflverse/nflverse-data/releases/download/weekly_stats/weekly_stats_{yr}.parquet"
-                url_legacy = f"https://github.com/nflverse/nflverse-data/releases/download/weekly/player_stats_{yr}.parquet"
+                # Pull PBP using our resilient fetch
+                pbp_df = fetch_pbp(str(yr), options={"downcast": True, "cache": False})
+                pbp_df = pbp_df[pbp_df["year"] == yr]
+                # Receiving targets and yards per player-week-team
+                # Only keep pass plays with a receiver
+                m = (pbp_df.get("pass", 0) == 1) & (pbp_df["receiver_player_id"].notna())
+                rec = pbp_df.loc[m, [
+                    "year", "week", "season_type", "posteam", "receiver_player_id",
+                    "receiving_yards", "air_yards", "yards_gained"
+                ]].copy()
+                rec["targets"] = 1
+                # receiving_yards may be null in some rows; fall back to yards_gained on passes
+                rec["receiving_yards"] = rec["receiving_yards"].fillna(rec["yards_gained"]).fillna(0)
+                rec["air_yards"] = rec["air_yards"].fillna(0)
+                grp = rec.groupby(["year","week","season_type","posteam","receiver_player_id"], as_index=False).agg({
+                    "targets":"sum",
+                    "receiving_yards":"sum",
+                    "air_yards":"sum"
+                })
+                grp.rename(columns={
+                    "year":"season",
+                    "posteam":"team",
+                    "receiver_player_id":"player_id",
+                    "air_yards":"receiving_air_yards"
+                }, inplace=True)
+                # Names/positions from rosters
                 try:
-                    df_y = duckdb.sql(f"SELECT * FROM read_parquet('{url_new}')").to_df()
-                except Exception:
-                    df_y = duckdb.sql(f"SELECT * FROM read_parquet('{url_legacy}')").to_df()
-            except Exception as exc4:
-                logger.error("weekly_fetch_fallback_failed", year=yr, error=str(exc4))
+                    rost = fetch_rosters(str(yr))
+                    name_cols = [c for c in ["player_name","football_name","first_name","last_name"] if c in rost.columns]
+                    if "first_name" in rost.columns and "last_name" in rost.columns:
+                        rost["__name_fnln"] = rost["first_name"].astype(str) + " " + rost["last_name"].astype(str)
+                        name_cols.append("__name_fnln")
+                    if name_cols:
+                        # prefer player_name, then football_name, then first+last
+                        for col in ["player_name","football_name","__name_fnln"]:
+                            if col in rost.columns:
+                                rost["__joined_name"] = rost[col]
+                                break
+                    else:
+                        rost["__joined_name"] = None
+                    keep = [c for c in ["season","week","team","player_id","__joined_name","position"] if c in rost.columns]
+                    rost_small = rost[keep].drop_duplicates()
+                    df_y = grp.merge(rost_small, on=[c for c in ["season","week","team","player_id"] if c in grp.columns and c in rost_small.columns], how="left")
+                    if "__joined_name" in df_y.columns:
+                        df_y.rename(columns={"__joined_name":"player_name"}, inplace=True)
+                except Exception as exc_ro:
+                    logger.warning("weekly_fallback_rosters_join_failed", year=yr, error=str(exc_ro))
+                    df_y = grp
+                # Ensure required columns
+                df_y["season"] = yr
+                # Market-share-style columns left NaN for now
+            except Exception as exc_fb:
+                logger.error("weekly_fallback_failed", year=yr, error=str(exc_fb))
                 continue
         df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)

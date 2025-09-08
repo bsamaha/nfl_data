@@ -35,8 +35,7 @@ def materialize_player_week(season: int, season_type: str = "REG") -> None:
 def smoke_validate_receiving_events(season: int, season_type: str = "REG") -> None:
     _run_sql(Path("queries/utilization/receiving_events_by_player_week.sql"), season, season_type)
 
-
-def materialize_player_week_from_pbp(season: int, season_type: str = "REG") -> None:
-    _run_sql(Path("queries/utilization/materialize_player_week_from_pbp.sql"), season, season_type)
+def backfill_weekly_from_pbp(season: int, season_type: str = "REG") -> None:
+    _run_sql(Path("queries/utilization/backfill/write_weekly_from_pbp.sql"), season, season_type)
 
 

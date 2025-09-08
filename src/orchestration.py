@@ -165,6 +165,10 @@ def run_update(
         # Gold materialization for utilization (current season only)
         try:
             util_reports.materialize_team_week_context(season=season, season_type="REG")
+            # If weekly data missing for current season, attempt a PBP-derived backfill first
+            weekly_dir = Path("data/silver/weekly/season=") / str(season)
+            if not weekly_dir.exists():
+                util_reports.backfill_weekly_from_pbp(season=season, season_type="REG")
             util_reports.materialize_player_week(season=season, season_type="REG")
             util_reports.smoke_validate_receiving_events(season=season, season_type="REG")
         except Exception as exc:
