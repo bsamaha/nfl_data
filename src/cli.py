@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from .config import load_dataset_catalog, DatasetCatalog, DatasetConfig
 from .logging_setup import configure_logging
 from .lineage import load_lineage, save_lineage, update_dataset_lineage, record_partition_counts
+from .reports import utilization as util_reports
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -160,6 +161,23 @@ def inseason(
     run_update(root, catalog, season, datasets=safe, max_workers=max_workers, no_validate=no_validate, since=None)
     # Second pass: unstable datasets (may still skip if upstream not ready)
     run_update(root, catalog, season, datasets=unstable, max_workers=max_workers, no_validate=no_validate, since=None)
+
+
+@app.command()
+def utilize(
+    action: str = typer.Argument(..., help="materialize_team|materialize_player|materialize_player_from_pbp"),
+    season: Optional[int] = typer.Option(None, "--season", "-s", help="Season (default: current year)"),
+    season_type: str = typer.Option("REG", "--season-type", "-t", help="Season type (REG/POST/PRE)"),
+) -> None:
+    season_val = season or int(datetime.now().strftime("%Y"))
+    if action == "materialize_team":
+        util_reports.materialize_team_week_context(season=season_val, season_type=season_type)
+    elif action == "materialize_player":
+        util_reports.materialize_player_week(season=season_val, season_type=season_type)
+    elif action == "materialize_player_from_pbp":
+        util_reports.materialize_player_week_from_pbp(season=season_val, season_type=season_type)
+    else:
+        raise typer.BadParameter("Unknown action")
 
 if __name__ == "__main__":
     app()

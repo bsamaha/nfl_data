@@ -118,7 +118,19 @@ def fetch_weekly(years: str, options: Optional[Dict[str, Any]] = None) -> pd.Dat
                 df_y = None
                 break
         if df_y is None:
-            continue
+            # Fallback: try direct DuckDB read from github release known path for weekly (stats_player)
+            try:
+                import duckdb
+                # nflverse reorganized: attempt both legacy and new naming
+                url_new = f"https://github.com/nflverse/nflverse-data/releases/download/weekly_stats/weekly_stats_{yr}.parquet"
+                url_legacy = f"https://github.com/nflverse/nflverse-data/releases/download/weekly/player_stats_{yr}.parquet"
+                try:
+                    df_y = duckdb.sql(f"SELECT * FROM read_parquet('{url_new}')").to_df()
+                except Exception:
+                    df_y = duckdb.sql(f"SELECT * FROM read_parquet('{url_legacy}')").to_df()
+            except Exception as exc4:
+                logger.error("weekly_fetch_fallback_failed", year=yr, error=str(exc4))
+                continue
         df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)
     if not frames:

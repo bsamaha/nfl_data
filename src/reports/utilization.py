@@ -36,3 +36,7 @@ def smoke_validate_receiving_events(season: int, season_type: str = "REG") -> No
     _run_sql(Path("queries/utilization/receiving_events_by_player_week.sql"), season, season_type)
 
 
+def materialize_player_week_from_pbp(season: int, season_type: str = "REG") -> None:
+    _run_sql(Path("queries/utilization/materialize_player_week_from_pbp.sql"), season, season_type)
+
+
