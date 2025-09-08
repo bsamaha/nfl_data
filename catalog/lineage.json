@@ -1,34 +1,8 @@
 {
   "schedules": {
-    "last_ingest_utc": "",
-    "rows_last_batch": 7263,
+    "last_ingest_utc": "2025-09-08T18:40:01.687347+00:00",
+    "rows_last_batch": 272,
     "changed_partitions": [
-      "season=1999",
-      "season=2000",
-      "season=2001",
-      "season=2002",
-      "season=2003",
-      "season=2004",
-      "season=2005",
-      "season=2006",
-      "season=2007",
-      "season=2008",
-      "season=2009",
-      "season=2010",
-      "season=2011",
-      "season=2012",
-      "season=2013",
-      "season=2014",
-      "season=2015",
-      "season=2016",
-      "season=2017",
-      "season=2018",
-      "season=2019",
-      "season=2020",
-      "season=2021",
-      "season=2022",
-      "season=2023",
-      "season=2024",
       "season=2025"
     ],
     "partitions": {
@@ -190,17 +164,17 @@
       },
       "season=2025": {
         "row_count": 272,
-        "sha256_fingerprint": "2c4f26739959214890686915d0e50665677a8b06428c3de2568aa634c1175041",
+        "sha256_fingerprint": "63558adcc8872b0f938f331be12e4b9610c626028e720dd769b5b3d7639057a0",
         "max_ingested_at": null,
         "min_ingested_at": null
       }
     }
   },
   "pbp": {
-    "last_ingest_utc": "2025-08-17T20:06:49.914302+00:00",
-    "rows_last_batch": 46136,
+    "last_ingest_utc": "2025-09-08T18:49:41.833562+00:00",
+    "rows_last_batch": 2562,
     "changed_partitions": [
-      "year=1999"
+      "year=2025"
     ],
     "partitions": {
       "year=1999": {
@@ -244,21 +218,19 @@
         "sha256_fingerprint": "58f6ddd1bbfb7249871eace86f0c56134ad33c451bb536385446a7d93c8a05b4",
         "max_ingested_at": null,
         "min_ingested_at": null
+      },
+      "year=2025": {
+        "row_count": 2562,
+        "sha256_fingerprint": "9fd8720a7f28c2e3cfebc871145881d412744a20fc362bc4b0a75349b4cba241",
+        "max_ingested_at": null,
+        "min_ingested_at": null
       }
     }
   },
   "weekly": {
-    "last_ingest_utc": "2025-08-17T20:09:58.246864+00:00",
+    "last_ingest_utc": "2025-09-08T18:23:43.247743+00:00",
     "rows_last_batch": 0,
-    "changed_partitions": [
-      "season=1999",
-      "season=2000",
-      "season=2001",
-      "season=2002",
-      "season=2003",
-      "season=2004",
-      "season=2005"
-    ],
+    "changed_partitions": [],
     "partitions": {
       "season=1999": {
         "row_count": 0,
@@ -419,32 +391,10 @@
     }
   },
   "rosters": {
-    "last_ingest_utc": "2025-08-16T23:24:03.675562+00:00",
-    "rows_last_batch": 841955,
+    "last_ingest_utc": "2025-09-08T18:40:02.051222+00:00",
+    "rows_last_batch": 3047,
     "changed_partitions": [
-      "season=2002",
-      "season=2003",
-      "season=2004",
-      "season=2005",
-      "season=2006",
-      "season=2007",
-      "season=2008",
-      "season=2009",
-      "season=2010",
-      "season=2011",
-      "season=2012",
-      "season=2013",
-      "season=2014",
-      "season=2015",
-      "season=2016",
-      "season=2017",
-      "season=2018",
-      "season=2019",
-      "season=2020",
-      "season=2021",
-      "season=2022",
-      "season=2023",
-      "season=2024"
+      "season=2025"
     ],
     "partitions": {
       "season=2002": {
@@ -584,30 +534,19 @@
         "sha256_fingerprint": "e56cba415bc4d34702e8c8b44860987c4267705be46b3ef9c53f085e5121f264",
         "max_ingested_at": null,
         "min_ingested_at": null
+      },
+      "season=2025": {
+        "row_count": 3046,
+        "sha256_fingerprint": "96b1a3fd6392beccec9e0d354fb04f75365980affbd428ae477a9299567cd98e",
+        "max_ingested_at": null,
+        "min_ingested_at": null
       }
     }
   },
   "injuries": {
-    "last_ingest_utc": "2025-08-16T23:04:50.673180+00:00",
-    "rows_last_batch": 84682,
-    "changed_partitions": [
-      "season=2009",
-      "season=2010",
-      "season=2011",
-      "season=2012",
-      "season=2013",
-      "season=2014",
-      "season=2015",
-      "season=2016",
-      "season=2017",
-      "season=2018",
-      "season=2019",
-      "season=2020",
-      "season=2021",
-      "season=2022",
-      "season=2023",
-      "season=2024"
-    ],
+    "last_ingest_utc": "2025-09-08T18:23:43.189762+00:00",
+    "rows_last_batch": 0,
+    "changed_partitions": [],
     "partitions": {
       "season=2012.0": {
         "row_count": 70401
@@ -747,22 +686,10 @@
     }
   },
   "depth_charts": {
-    "last_ingest_utc": "2025-08-16T22:52:42.715543+00:00",
-    "rows_last_batch": 476152,
+    "last_ingest_utc": "2025-09-08T18:23:43.781604+00:00",
+    "rows_last_batch": 101885,
     "changed_partitions": [
-      "season=2012",
-      "season=2013",
-      "season=2014",
-      "season=2015",
-      "season=2016",
-      "season=2017",
-      "season=2018",
-      "season=2019",
-      "season=2020",
-      "season=2021",
-      "season=2022",
-      "season=2023",
-      "season=2024"
+      "season=2025"
     ],
     "partitions": {
       "season=2012": {
@@ -842,25 +769,20 @@
         "sha256_fingerprint": "418089273ed267e5111e85749974bfe7c48d42e64fd7774c89f0b53c1e63f91f",
         "max_ingested_at": null,
         "min_ingested_at": null
+      },
+      "season=2025": {
+        "row_count": 0,
+        "sha256_fingerprint": "",
+        "max_ingested_at": null,
+        "min_ingested_at": null
       }
     }
   },
   "snap_counts": {
-    "last_ingest_utc": "2025-08-16T23:04:51.015290+00:00",
-    "rows_last_batch": 6500,
+    "last_ingest_utc": "2025-09-08T18:23:43.602843+00:00",
+    "rows_last_batch": 1390,
     "changed_partitions": [
-      "season=2013",
-      "season=2014",
-      "season=2015",
-      "season=2016",
-      "season=2017",
-      "season=2018",
-      "season=2019",
-      "season=2020",
-      "season=2021",
-      "season=2022",
-      "season=2023",
-      "season=2024"
+      "season=2025"
     ],
     "partitions": {
       "season=2013": {
@@ -934,20 +856,26 @@
         "sha256_fingerprint": "046d7d6f7f7d13285181b12aa3d86df7a49b0da35028e7bdca476c9f3b1045b0",
         "max_ingested_at": null,
         "min_ingested_at": null
+      },
+      "season=2025": {
+        "row_count": 0,
+        "sha256_fingerprint": "",
+        "max_ingested_at": null,
+        "min_ingested_at": null
       }
     }
   },
   "dk_bestball": {
-    "last_ingest_utc": "2025-08-17T18:48:01.687717+00:00",
+    "last_ingest_utc": "2025-09-08T14:34:35.818992+00:00",
     "rows_last_batch": 45,
     "changed_partitions": [
-      "section=draft",
+      "section=scoring",
       "section=lineup",
       "section=roster",
-      "section=scoring",
-      "section=scoring_period",
+      "section=tournaments_rounds",
       "section=tournaments",
-      "section=tournaments_rounds"
+      "section=scoring_period",
+      "section=draft"
     ],
     "partitions": {
       "section=<NA>": {
@@ -961,25 +889,25 @@
       },
       "section=scoring": {
         "row_count": 15,
-        "sha256_fingerprint": "e46a1955060e9fd67e667728c80d5eb868fcdc412a6b15b20d2725fce2817d03",
+        "sha256_fingerprint": "4135efb11748d8f7299a4d50c3d1f5ff01e890e84d75d96c86bf8bd114c39d65",
         "max_ingested_at": null,
         "min_ingested_at": null
       },
       "section=lineup": {
         "row_count": 5,
-        "sha256_fingerprint": "3f38556690ced0168267cf0eb7464d89fdfc46fd8296ac85fb0e22d3cdb7ac23",
+        "sha256_fingerprint": "dd76226b34b2d5dfc7daa2b9e1ab6a183380386339f4ba23f9b786fdb49960f5",
         "max_ingested_at": null,
         "min_ingested_at": null
       },
       "section=roster": {
         "row_count": 9,
-        "sha256_fingerprint": "6934454926b6ceae18533793b733ff511d5e1645c515b98272a4ad2ff1f8d7fb",
+        "sha256_fingerprint": "b53b07520a17ae4f0e2d4dc131d9064e91fdd319728fb4311b619a31b1ea0f52",
         "max_ingested_at": null,
         "min_ingested_at": null
       },
       "section=tournaments_rounds": {
         "row_count": 4,
-        "sha256_fingerprint": "b5b5c2c9b44c378303106bff7833746fc9899dcf4133a3ad4f30806de1b86317",
+        "sha256_fingerprint": "d2a838c487afe0a5a4ea3d95c266f969e9bba74fabd208d5e3d7ad82800344cd",
         "max_ingested_at": null,
         "min_ingested_at": null
       },
@@ -997,21 +925,21 @@
       },
       "section=draft": {
         "row_count": 9,
-        "sha256_fingerprint": "39e93d05524b58ef53bf365ffb8bd2bd363888471f302742177cd50b7efd579c",
+        "sha256_fingerprint": "b0e1a2554dee23af3617ace5c254fbec0360e6d1041ff69371f340f4c833d14d",
         "max_ingested_at": null,
         "min_ingested_at": null
       }
     }
   },
   "ids": {
-    "last_ingest_utc": "2025-08-17T19:11:22.893130+00:00",
-    "rows_last_batch": 7950,
+    "last_ingest_utc": "2025-09-08T18:40:01.947448+00:00",
+    "rows_last_batch": 12115,
     "changed_partitions": [
-      ""
+      "all"
     ],
     "partitions": {
       "all": {
-        "row_count": 7950,
+        "row_count": 12115,
         "sha256_fingerprint": "a25a4ea55616f8ba60e83f44db4a50056ea4add76fcbacb8a7a0d0be082034f5",
         "max_ingested_at": null,
         "min_ingested_at": null
@@ -1022,16 +950,10 @@
     }
   },
   "rosters_seasonal": {
-    "last_ingest_utc": "2025-08-17T20:03:41.592403+00:00",
-    "rows_last_batch": 14300,
+    "last_ingest_utc": "2025-09-08T18:40:01.686626+00:00",
+    "rows_last_batch": 3046,
     "changed_partitions": [
-      "season=1999",
-      "season=2000",
-      "season=2001",
-      "season=2002",
-      "season=2003",
-      "season=2004",
-      "season=2005"
+      "season=2025"
     ],
     "partitions": {
       "season=1999": {
@@ -1075,18 +997,129 @@
         "sha256_fingerprint": "d70582d564b881ee030cd298c011b0eb1f5528c23bcbaee0b403dd1d446ea3ef",
         "max_ingested_at": null,
         "min_ingested_at": null
+      },
+      "season=2025": {
+        "row_count": 6092,
+        "sha256_fingerprint": "9f9fdd783d2796f12f723c75369fe9e349bd971e4c7edae3459c87a6c145a7fc",
+        "max_ingested_at": null,
+        "min_ingested_at": null
       }
     }
   },
   "players": {
-    "last_ingest_utc": "2025-08-17T19:55:32.567089+00:00",
-    "rows_last_batch": 24522,
+    "last_ingest_utc": "2025-09-08T18:55:04.524877+00:00",
+    "rows_last_batch": 24289,
     "changed_partitions": [
       "all"
     ],
     "partitions": {
       "all": {
-        "row_count": 24522
+        "row_count": 24289
+      }
+    }
+  },
+  "ngs_weekly": {
+    "last_ingest_utc": "2025-09-08T18:40:02.991571+00:00",
+    "rows_last_batch": 516,
+    "changed_partitions": [
+      "season=2025/stat_type=nan",
+      "season=<NA>/stat_type=passing",
+      "season=<NA>/stat_type=rushing",
+      "season=<NA>/stat_type=receiving"
+    ],
+    "partitions": {
+      "season=2016/stat_type=passing": {
+        "row_count": 22,
+        "sha256_fingerprint": "4b46627ee2b85b26281330db9d8117c93d44ef66937b02b8b390e88c8360387b",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2017/stat_type=passing": {
+        "row_count": 1,
+        "sha256_fingerprint": "3fd1335601e29a9db3a0ba4fb92b9aaa870ef09eca84db36d7fe8efbc4f2bed2",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2017/stat_type=nan": {
+        "row_count": 22,
+        "sha256_fingerprint": "edce106352294dc9d5042048b2b41585d65065a083edd7ce6682e542e614e216",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2018/stat_type=nan": {
+        "row_count": 22,
+        "sha256_fingerprint": "e858e29075728f8a1cca01dde28a9beaaaa0cc235281e27e1679302e2c44bdae",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2019/stat_type=nan": {
+        "row_count": 22,
+        "sha256_fingerprint": "0e1f507b85ec4213bcd6b91d99ac8d745ff25badb93760b663db7206be332307",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2020/stat_type=nan": {
+        "row_count": 22,
+        "sha256_fingerprint": "da34945ed2c9b312cb2182d14c43d328b0a37d1cca62e22be6fecbd52b5770cf",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2021/stat_type=nan": {
+        "row_count": 23,
+        "sha256_fingerprint": "2916232647597b451f9d2e26658ed357d679ae305cb03800a2aa8a06c0db257c",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2022/stat_type=nan": {
+        "row_count": 23,
+        "sha256_fingerprint": "5163eca5b86c9e9a4d536527608d1136cf34453048c2c58b2f811b6b8f775fc2",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2023/stat_type=nan": {
+        "row_count": 23,
+        "sha256_fingerprint": "488803ccbf6a5b8d186d7c83892ed53e392f194675c31fe1cbf47c24d9386127",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2024/stat_type=nan": {
+        "row_count": 23,
+        "sha256_fingerprint": "eadce9ee9153ab7ff1c57dbdce8e4d0b5612792cc0d26e742a0b904c4f1ff6d8",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2016/stat_type=rushing": {
+        "row_count": 22,
+        "sha256_fingerprint": "8c223eff998eea74b5c98723d2d93e98eb8e11de0689d4e68bbd19d0ab8e649a",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2017/stat_type=rushing": {
+        "row_count": 1,
+        "sha256_fingerprint": "4c4de4bd22827fd0746c56cc580f6b5f6235eecb2559a9004c5e6de8a352c0cc",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=2016/stat_type=receiving": {
+        "row_count": 22,
+        "sha256_fingerprint": "5db12770427bf22a06922d3c44a2343db330d31f1449ef01c15d0043c62b1418",
+        "max_ingested_at": null,
+        "min_ingested_at": null
+      },
+      "season=<NA>/stat_type=passing": {
+        "row_count": 516
+      },
+      "season=<NA>/stat_type=rushing": {
+        "row_count": 516
+      },
+      "season=<NA>/stat_type=receiving": {
+        "row_count": 516
+      },
+      "season=2025/stat_type=nan": {
+        "row_count": 2,
+        "sha256_fingerprint": "cf4e30fe319fc1e12ef89a3f0831b45393562d3aefef252f7fb859cf51545090",
+        "max_ingested_at": null,
+        "min_ingested_at": null
       }
     }
   }

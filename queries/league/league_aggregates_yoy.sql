@@ -1,3 +1,54 @@
+-- Season-level league aggregates (YoY). Summaries from weekly league metrics.
+WITH params AS (
+  SELECT 2005 AS season_start, 2024 AS season_end, 'REG' AS season_type
+),
+weekly AS (
+  -- Reuse the weekly query via DuckDB inclusion would be ideal, but we'll inline a lightweight subset:
+  SELECT * FROM read_parquet('data/silver/pbp/year=*/**/*.parquet')
+),
+plays AS (
+  SELECT p.*
+  FROM weekly p, params par
+  WHERE p.season BETWEEN par.season_start AND par.season_end
+    AND p.season_type = par.season_type
+),
+filtered AS (
+  SELECT *,
+         COALESCE(pass, 0)::INT AS is_pass,
+         COALESCE(rush_attempt, 0)::INT AS is_rush,
+         COALESCE(qb_spike, 0)::INT AS is_spike,
+         COALESCE(qb_kneel, 0)::INT AS is_kneel,
+         COALESCE(play_deleted, 0)::INT AS is_deleted
+  FROM plays
+),
+qual AS (
+  SELECT * FROM filtered
+  WHERE (is_pass = 1 OR is_rush = 1) AND is_spike = 0 AND is_kneel = 0 AND is_deleted = 0
+),
+game_points AS (
+  SELECT season, game_id, MAX(total_home_score)+MAX(total_away_score) AS pts
+  FROM plays
+  GROUP BY season, game_id
+),
+season_points AS (
+  SELECT season, AVG(pts) AS ppg
+  FROM game_points
+  GROUP BY season
+)
+SELECT
+  q.season,
+  COUNT(*) FILTER (WHERE is_pass=1) / CAST(NULLIF(COUNT(*),0) AS DOUBLE) AS pass_rate,
+  AVG(epa) AS epa_all,
+  AVG(CASE WHEN is_pass=1 THEN epa END) AS epa_pass,
+  AVG(CASE WHEN is_rush=1 THEN epa END) AS epa_rush,
+  SUM(CASE WHEN is_pass=1 AND yards_gained>=20 THEN 1 ELSE 0 END)::DOUBLE / NULLIF(SUM(CASE WHEN is_pass=1 THEN 1 ELSE 0 END),0) AS explosive_pass_rate,
+  SUM(CASE WHEN is_rush=1 AND yards_gained>=10 THEN 1 ELSE 0 END)::DOUBLE / NULLIF(SUM(CASE WHEN is_rush=1 THEN 1 ELSE 0 END),0) AS explosive_rush10_rate,
+  sp.ppg
+FROM qual q
+JOIN season_points sp USING (season)
+GROUP BY q.season, sp.ppg
+ORDER BY q.season;
+
 -- League macro-level aggregates year-over-year
 -- Usage examples:
 --   scripts/run_query.sh -f queries/league_aggregates_yoy.sql -s 2024 -t REG

@@ -35,7 +35,7 @@ season_stats AS (
 workhorse AS (
   SELECT *
   FROM season_stats
-  WHERE rush_att >= 300
+  WHERE rush_att >= :min_carries
 )
 SELECT
   w.season,
@@ -47,6 +47,7 @@ SELECT
   w.receptions,
   w.rec_yds,
   w.rec_td,
+  (w.rush_td + w.rec_td) AS td_total,
   n.season AS next_season,
   n.rush_att AS rush_att_ny,
   n.rush_yds AS rush_yds_ny,
@@ -54,12 +55,14 @@ SELECT
   n.receptions AS receptions_ny,
   n.rec_yds AS rec_yds_ny,
   n.rec_td AS rec_td_ny,
+  (n.rush_td + n.rec_td) AS td_total_ny,
   (n.rush_att - w.rush_att) AS delta_rush_att,
   (n.rush_yds - w.rush_yds) AS delta_rush_yds,
   (n.rush_td - w.rush_td) AS delta_rush_td,
   (n.receptions - w.receptions) AS delta_receptions,
   (n.rec_yds - w.rec_yds) AS delta_rec_yds,
-  (n.rec_td - w.rec_td) AS delta_rec_td
+  (n.rec_td - w.rec_td) AS delta_rec_td,
+  ((n.rush_td + n.rec_td) - (w.rush_td + w.rec_td)) AS delta_td_total
 FROM workhorse w
 LEFT JOIN season_stats n
   ON n.player_id = w.player_id

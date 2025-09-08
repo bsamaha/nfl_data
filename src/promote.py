@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 import polars as pl
+import structlog
 
 from .config import DatasetConfig
 from .io import ensure_dir, write_parquet_dataset, remove_dir, move_replace
@@ -13,10 +14,13 @@ from .schemas import validate_bronze, validate_silver
 from .transforms import to_silver
 from .lineage import PartitionStats, compute_sha256_for_keys
 
+logger = structlog.get_logger(__name__)
+
 
 def discover_changed_partitions(df: pd.DataFrame, partitions: List[str]) -> List[str]:
     if not partitions:
-        return ["all"]
+        # No partitions: treat as single unpartitioned dataset; caller should handle default path
+        return []
     keys = []
     for vals in df[partitions].drop_duplicates().itertuples(index=False, name=None):
         part = "".join([f"{col}={val}/" for col, val in zip(partitions, vals)])
@@ -102,9 +106,18 @@ def promote_to_silver(
                     v_cast = v
                 const_assignments[k] = v_cast
             if const_assignments:
-                df_bronze = df_bronze.with_columns(
-                    [pl.lit(val).alias(key) for key, val in const_assignments.items() if key not in df_bronze.columns]
-                )
+                # Ensure columns exist; if already present, fill nulls with the partition constant
+                fills = [
+                    pl.when(pl.col(key).is_null()).then(pl.lit(val)).otherwise(pl.col(key)).alias(key)
+                    for key, val in const_assignments.items()
+                    if key in df_bronze.columns
+                ]
+                new_cols = [
+                    pl.lit(val).alias(key)
+                    for key, val in const_assignments.items()
+                    if key not in df_bronze.columns
+                ]
+                df_bronze = df_bronze.with_columns(fills + new_cols)
         if not no_validate:
             validate_bronze(cfg.name, df_bronze)
 
@@ -187,7 +200,41 @@ def promote_to_silver(
         else:
             df_merged_raw = df_bronze
 
+        # After merge, ensure partition columns are populated using the partition constants
+        # to avoid nulls in required partition fields (e.g., year/season) during validation
+        if part:
+            const_assignments = {}
+            for seg in part.split("/"):
+                if not seg or "=" not in seg:
+                    continue
+                k, v = seg.split("=", 1)
+                try:
+                    v_cast = int(v)
+                except ValueError:
+                    v_cast = v
+                const_assignments[k] = v_cast
+            if const_assignments:
+                fills = []
+                new_cols = []
+                for key, val in const_assignments.items():
+                    if key in df_merged_raw.columns:
+                        fills.append(
+                            pl.when(pl.col(key).is_null())
+                            .then(pl.lit(val))
+                            .otherwise(pl.col(key))
+                            .alias(key)
+                        )
+                    else:
+                        new_cols.append(pl.lit(val).alias(key))
+                if fills or new_cols:
+                    df_merged_raw = df_merged_raw.with_columns(fills + new_cols)
+
         df_silver = to_silver(cfg.name, df_merged_raw)
+        # If the transformed frame is empty or missing required keys, log and skip promote for this partition
+        if df_silver.height == 0:
+            logger.warning("promote_skip_empty", dataset=cfg.name, partition=part)
+            stats_by_part[part or "all"] = PartitionStats(row_count=0, sha256_fingerprint="")
+            continue
 
         # Dataset-specific enrichments that may require reading other silver tables
         if cfg.name == "weekly":
@@ -357,7 +404,13 @@ def promote_to_silver(
                         except Exception:
                             pass
         if not no_validate:
-            validate_silver(cfg.name, df_silver)
+            try:
+                validate_silver(cfg.name, df_silver)
+            except AssertionError as exc:
+                # Soft-fail: skip partition when required keys are not present yet (common early-week)
+                logger.warning("promote_skip_invalid", dataset=cfg.name, partition=part, error=str(exc))
+                stats_by_part[part or "all"] = PartitionStats(row_count=0, sha256_fingerprint="")
+                continue
 
         # Compute lineage stats from silver frame
         part_key = part or "all"

@@ -55,7 +55,8 @@ WEEKLY_SCHEMA_SILVER = pa.DataFrameSchema(
         "season": pa.Column("Int64", nullable=False),
         "week": pa.Column("Int64", nullable=False),
         "player_id": pa.Column(str, nullable=False),
-        "team": pa.Column(str, nullable=False),
+        # Allow team to be nullable for seasons/rows where team is not provided upstream
+        "team": pa.Column(str, nullable=True),
     },
     coerce=True,
 )

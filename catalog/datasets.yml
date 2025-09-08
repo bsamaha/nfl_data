@@ -136,7 +136,7 @@ datasets:
     years: "ALL"
     partitions: ["season","stat_type"]
     key: ["season","week","player_id","stat_type"]
-    enabled: false
+    enabled: true
     sort_by: ["season","week","player_id","stat_type"]
     max_rows_per_file: 1000000
 

@@ -133,6 +133,34 @@ def promote(
             typer.echo(f"promoted: {cfg.name} silver <- bronze {part} rows={rc}")
 
 
+@app.command()
+def inseason(
+    season: int = typer.Option(..., help="Season to update"),
+    no_validate: bool = typer.Option(False, help="Skip validation for unstable feeds"),
+    max_workers: int = typer.Option(2, help="Max parallel dataset workers"),
+    retry_attempts: int = typer.Option(3, help="Retry attempts for 404-prone datasets"),
+    retry_base_seconds: int = typer.Option(5, help="Base seconds for backoff"),
+) -> None:
+    """Convenience command: run safe datasets immediately, then 404-prone datasets with retry."""
+    catalog = load_dataset_catalog()
+    root = _resolve_root_from_env(catalog.root)
+    from .orchestration import run_update
+    # Safe now
+    safe = "schedules,rosters,rosters_seasonal,players,ids,ngs_weekly,pbp"
+    # Unstable early Monday
+    unstable = "weekly,injuries,depth_charts,snap_counts"
+
+    # Inject retry options into importer options (read by importers where supported)
+    # We pass via environment variables to avoid changing many signatures
+    import os
+    os.environ["IMPORTER_RETRY_ATTEMPTS"] = str(retry_attempts)
+    os.environ["IMPORTER_RETRY_BASE_SECONDS"] = str(retry_base_seconds)
+
+    # First pass: safe datasets
+    run_update(root, catalog, season, datasets=safe, max_workers=max_workers, no_validate=no_validate, since=None)
+    # Second pass: unstable datasets (may still skip if upstream not ready)
+    run_update(root, catalog, season, datasets=unstable, max_workers=max_workers, no_validate=no_validate, since=None)
+
 if __name__ == "__main__":
     app()
 

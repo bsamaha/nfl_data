@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Optional, Dict, Any, List
+import time
 import pandas as pd
 import nfl_data_py as nfl
 import structlog
@@ -18,6 +19,16 @@ def _parse_years_arg(years: str) -> list[int]:
 def _with_const_col(df: pd.DataFrame, col: str, val: Any) -> pd.DataFrame:
     """Add a constant column without causing pandas frame fragmentation."""
     if col in df.columns:
+        # If the column already exists, fill any missing values with the constant
+        # Use a mask to avoid chained assignment warnings and preserve dtypes
+        try:
+            mask = df[col].isna()
+        except Exception:
+            # If isna() is not applicable (e.g., non-standard dtype), leave as-is
+            mask = None
+        if mask is not None and getattr(mask, "any", lambda: False)():
+            df = df.copy()
+            df.loc[mask, col] = val
         return df
     # Build a single-column frame and concat to avoid repeated insert operations
     return pd.concat([df, pd.DataFrame({col: [val] * len(df)})], axis=1)
@@ -89,10 +100,24 @@ def fetch_weekly(years: str, options: Optional[Dict[str, Any]] = None) -> pd.Dat
     year_list = _parse_years_arg(years)
     frames: List[pd.DataFrame] = []
     for yr in year_list:
-        try:
-            df_y = nfl.import_weekly_data([yr])
-        except Exception as exc:
-            logger.error("weekly_fetch_failed", year=yr, error=str(exc))
+        df_y = None
+        attempts = int((options or {}).get("retry_attempts", 3))
+        base_sleep = int((options or {}).get("retry_base_seconds", 5))
+        for attempt in range(1, attempts + 1):
+            try:
+                df_y = nfl.import_weekly_data([yr])
+                break
+            except Exception as exc:
+                msg = str(exc)
+                if "404" in msg or "Not Found" in msg:
+                    logger.warning("weekly_fetch_retry", year=yr, attempt=attempt, error=msg)
+                    if attempt < attempts:
+                        time.sleep(base_sleep * attempt)
+                    continue
+                logger.error("weekly_fetch_failed", year=yr, error=msg)
+                df_y = None
+                break
+        if df_y is None:
             continue
         df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)
@@ -145,14 +170,28 @@ def fetch_injuries(years: str, options: Optional[Dict[str, Any]] = None) -> pd.D
     year_list = _parse_years_arg(years)
     frames: List[pd.DataFrame] = []
     for yr in year_list:
-        try:
-            if hasattr(nfl, "import_injuries"):
-                df_y = nfl.import_injuries([yr])
-            else:
-                # Legacy or alternative name not available; mark as unavailable before 2009
-                raise RuntimeError("injuries not available in this nfl_data_py version")
-        except Exception as exc:
-            logger.error("injuries_fetch_failed", year=yr, error=str(exc))
+        df_y = None
+        attempts = int((options or {}).get("retry_attempts", 3))
+        base_sleep = int((options or {}).get("retry_base_seconds", 5))
+        for attempt in range(1, attempts + 1):
+            try:
+                if hasattr(nfl, "import_injuries"):
+                    df_y = nfl.import_injuries([yr])
+                else:
+                    # Legacy or alternative name not available; mark as unavailable before 2009
+                    raise RuntimeError("injuries not available in this nfl_data_py version")
+                break
+            except Exception as exc:
+                msg = str(exc)
+                if "404" in msg or "Not Found" in msg:
+                    logger.warning("injuries_fetch_retry", year=yr, attempt=attempt, error=msg)
+                    if attempt < attempts:
+                        time.sleep(base_sleep * attempt)
+                    continue
+                logger.error("injuries_fetch_failed", year=yr, error=msg)
+                df_y = None
+                break
+        if df_y is None:
             continue
         df_y = _with_const_col(df_y, "season", yr)
         frames.append(df_y)

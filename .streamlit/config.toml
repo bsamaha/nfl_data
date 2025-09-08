@@ -1,0 +1,15 @@
+[theme]
+base = "dark"
+primaryColor = "#00E0A3"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#151A24"
+textColor = "#E8EAF0"
+font = "Inter"
+
+[client]
+toolbarMode = "auto"
+
+[server]
+headless = true
+
+

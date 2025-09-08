@@ -161,6 +161,27 @@ def run_update(
                     lineage = record_partition_counts(lineage, name, part, int(rc) if rc is not None else rows)
         save_lineage(lineage)
 
+        # Emit a concise end-of-run summary to stdout/log
+        try:
+            succeeded = []
+            failed = []
+            for cfg in selected:
+                try:
+                    ds_lineage = lineage.get("datasets", {}).get(cfg.name, {})
+                    last_rows = int(ds_lineage.get("rows_last_batch", 0))
+                    parts = ds_lineage.get("changed_partitions", []) or []
+                    succeeded.append((cfg.name, last_rows, parts))
+                except Exception:
+                    failed.append(cfg.name)
+            logger.info(
+                "update_summary",
+                season=season,
+                succeeded=[{"dataset": n, "rows": r, "parts": p} for n, r, p in succeeded],
+                failed=failed,
+            )
+        except Exception:
+            pass
+
 
 def run_recache_pbp(root: str, catalog: DatasetCatalog, season: int) -> None:
     cfg = catalog.datasets.get("pbp")

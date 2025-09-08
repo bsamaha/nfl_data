@@ -22,6 +22,10 @@ recache:
 fmt:
 	$(PY) -m black src || true
 
-app: install
+app: install macro-report
 	$(VENV)/bin/streamlit run src/app_streamlit.py
+
+.PHONY: macro-report
+macro-report: install
+	$(PY) src/reports/macro_report.py
 
