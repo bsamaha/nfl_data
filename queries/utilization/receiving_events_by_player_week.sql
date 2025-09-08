@@ -5,7 +5,7 @@ WITH params AS (
 ), plays AS (
   SELECT year AS season, week, season_type, game_id, posteam AS team,
          receiver_player_id AS player_id,
-         air_yards, yardline_100, play_action,
+         air_yards, yardline_100,
          down, ydstogo,
          half_seconds_remaining,
          CASE WHEN pass=1 AND receiver_player_id IS NOT NULL THEN 1 ELSE 0 END AS is_target
@@ -23,8 +23,7 @@ SELECT season, week, season_type, team, player_id,
        SUM(CASE WHEN down IN (3,4) AND ydstogo >= 5 AND is_target=1 THEN 1 ELSE 0 END) AS ldd_targets,
        SUM(CASE WHEN down IN (1,2,3,4) AND ydstogo <= 2 AND is_target=1 THEN 1 ELSE 0 END) AS sdd_targets,
        SUM(CASE WHEN half_seconds_remaining <= 120 AND is_target=1 THEN 1 ELSE 0 END) AS two_minute_targets,
-       SUM(CASE WHEN half_seconds_remaining <= 240 AND is_target=1 THEN 1 ELSE 0 END) AS four_minute_targets,
-       SUM(CASE WHEN play_action=TRUE AND is_target=1 THEN 1 ELSE 0 END) AS play_action_targets
+       SUM(CASE WHEN half_seconds_remaining <= 240 AND is_target=1 THEN 1 ELSE 0 END) AS four_minute_targets
 FROM plays
 GROUP BY season, week, season_type, team, player_id;
 

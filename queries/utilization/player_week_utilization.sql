@@ -6,11 +6,11 @@ WITH params AS (
   SELECT * FROM read_parquet('data/silver/weekly/season=*/**/*.parquet', union_by_name=true)
   WHERE season = (SELECT season FROM params) AND season_type = (SELECT season_type FROM params)
 ), sc AS (
-  SELECT season, week, team, player_id,
+  SELECT season, week, player_id AS sc_player_id,
          AVG(offense_pct) AS snap_share
   FROM read_parquet('data/silver/snap_counts/season=*/*.parquet', union_by_name=true)
   WHERE season = (SELECT season FROM params)
-  GROUP BY season, week, team, player_id
+  GROUP BY season, week, sc_player_id
 ), ctx AS (
   SELECT * FROM (
     WITH snaps AS (
@@ -26,26 +26,19 @@ WITH params AS (
       FROM read_parquet('data/silver/pbp/year=*/**/*.parquet', union_by_name=true)
       WHERE year = (SELECT season FROM params)
         AND season_type = (SELECT season_type FROM params)
-      GROUP BY season, week, season_type, team
+      GROUP BY year, week, season_type, posteam
     )
     SELECT p.season, p.week, p.season_type, p.team,
            s.team_offense_snaps, p.team_dropbacks, p.team_pass_attempts, p.team_carries
     FROM pbp p LEFT JOIN snaps s
       ON s.season=p.season AND s.week=p.week AND s.team=p.team
   )
-), rr AS (
-  SELECT season, week, player_id, team,
-         SUM(routes_run) AS routes_run
-  FROM read_parquet('data/silver/ngs_weekly/season=*/**/*.parquet', union_by_name=true)
-  WHERE season = (SELECT season FROM params)
-    AND stat_type = 'receiving'
-  GROUP BY season, week, player_id, team
 ), rec_ev AS (
   SELECT * FROM (
     WITH plays AS (
       SELECT year AS season, week, season_type, posteam AS team,
              receiver_player_id AS player_id,
-             air_yards, yardline_100, play_action,
+             air_yards, yardline_100,
              down, ydstogo,
              half_seconds_remaining,
              CASE WHEN pass=1 AND receiver_player_id IS NOT NULL THEN 1 ELSE 0 END AS is_target
@@ -63,8 +56,7 @@ WITH params AS (
            SUM(CASE WHEN down IN (3,4) AND ydstogo >= 5 AND is_target=1 THEN 1 ELSE 0 END) AS ldd_targets,
            SUM(CASE WHEN down IN (1,2,3,4) AND ydstogo <= 2 AND is_target=1 THEN 1 ELSE 0 END) AS sdd_targets,
            SUM(CASE WHEN half_seconds_remaining <= 120 AND is_target=1 THEN 1 ELSE 0 END) AS two_minute_targets,
-           SUM(CASE WHEN half_seconds_remaining <= 240 AND is_target=1 THEN 1 ELSE 0 END) AS four_minute_targets,
-           SUM(CASE WHEN play_action=TRUE AND is_target=1 THEN 1 ELSE 0 END) AS play_action_targets
+           SUM(CASE WHEN half_seconds_remaining <= 240 AND is_target=1 THEN 1 ELSE 0 END) AS four_minute_targets
     FROM plays
     GROUP BY season, week, season_type, team, player_id
   )
@@ -79,17 +71,17 @@ WITH params AS (
   WHERE year = (SELECT season FROM params)
     AND season_type = (SELECT season_type FROM params)
     AND rush = 1
-  GROUP BY season, week, season_type, team, player_id
+  GROUP BY year, week, season_type, posteam, rusher_player_id
 )
 SELECT
-  w.season, w.week, w.season_type,
+  w.season AS season, w.week AS week, w.season_type AS season_type,
   w.player_id, MAX(w.player_name) AS player_name, MAX(w.position) AS position,
-  COALESCE(w.team, sc.team) AS team,
+  COALESCE(w.team, rec_ev.team, rush_ev.team) AS team,
   MAX(sc.snap_share) AS snap_share,
-  MAX(rr.routes_run) AS routes_run,
-  CASE WHEN MAX(ctx.team_dropbacks) > 0 THEN MAX(rr.routes_run)::DOUBLE / NULLIF(MAX(ctx.team_dropbacks),0) END AS route_participation,
-  CASE WHEN SUM(COALESCE(rr.routes_run,0)) > 0 THEN SUM(COALESCE(w.targets,0))::DOUBLE / NULLIF(SUM(COALESCE(rr.routes_run,0)),0) END AS tprr,
-  CASE WHEN SUM(COALESCE(rr.routes_run,0)) > 0 THEN SUM(COALESCE(w.receiving_yards,0))::DOUBLE / NULLIF(SUM(COALESCE(rr.routes_run,0)),0) END AS yprr,
+  CAST(NULL AS DOUBLE) AS routes_run,
+  CAST(NULL AS DOUBLE) AS route_participation,
+  CAST(NULL AS DOUBLE) AS tprr,
+  CAST(NULL AS DOUBLE) AS yprr,
   SUM(COALESCE(w.targets,0)) AS targets,
   AVG(NULLIF(w.target_share, NULL)) AS target_share,
   SUM(COALESCE(w.receiving_yards,0)) AS receiving_yards,
@@ -109,18 +101,15 @@ SELECT
   CASE WHEN MAX(ctx.team_pass_attempts) > 0 THEN SUM(COALESCE(rec_ev.third_fourth_down_targets,0))::DOUBLE / NULLIF(MAX(ctx.team_pass_attempts),0) END AS third_fourth_down_target_share,
   CASE WHEN MAX(ctx.team_pass_attempts) > 0 THEN SUM(COALESCE(rec_ev.two_minute_targets,0))::DOUBLE / NULLIF(MAX(ctx.team_pass_attempts),0) END AS two_minute_target_share,
   CASE WHEN MAX(ctx.team_pass_attempts) > 0 THEN SUM(COALESCE(rec_ev.four_minute_targets,0))::DOUBLE / NULLIF(MAX(ctx.team_pass_attempts),0) END AS four_minute_target_share,
-  CASE WHEN MAX(ctx.team_pass_attempts) > 0 THEN SUM(COALESCE(rec_ev.play_action_targets,0))::DOUBLE / NULLIF(MAX(ctx.team_pass_attempts),0) END AS play_action_target_share,
   CASE WHEN MAX(ctx.team_carries) > 0 THEN SUM(COALESCE(rush_ev.carries,0))::DOUBLE  / NULLIF(MAX(ctx.team_carries),0) END AS carry_share,
   CASE WHEN MAX(ctx.team_carries) > 0 THEN SUM(COALESCE(rush_ev.rz20_carries,0))::DOUBLE / NULLIF(MAX(ctx.team_carries),0) END AS rz20_carry_share,
   CASE WHEN MAX(ctx.team_carries) > 0 THEN SUM(COALESCE(rush_ev.rz10_carries,0))::DOUBLE / NULLIF(MAX(ctx.team_carries),0) END AS rz10_carry_share,
   CASE WHEN MAX(ctx.team_carries) > 0 THEN SUM(COALESCE(rush_ev.rz5_carries,0))::DOUBLE  / NULLIF(MAX(ctx.team_carries),0) END AS rz5_carry_share
 FROM w
-LEFT JOIN sc    ON sc.season=w.season AND sc.week=w.week AND sc.team=COALESCE(w.team, sc.team) AND sc.player_id=w.player_id
-LEFT JOIN ctx   ON ctx.season=w.season AND ctx.week=w.week AND ctx.season_type=w.season_type AND ctx.team=COALESCE(w.team, ctx.team)
-LEFT JOIN rr    ON rr.season=w.season AND rr.week=w.week AND rr.player_id=w.player_id
-LEFT JOIN rec_ev ON rec_ev.season=w.season AND rec_ev.week=w.week AND rec_ev.season_type=w.season_type AND rec_ev.team=COALESCE(w.team, rec_ev.team) AND rec_ev.player_id=w.player_id
-LEFT JOIN rush_ev ON rush_ev.season=w.season AND rush_ev.week=w.week AND rush_ev.season_type=w.season_type AND rush_ev.team=COALESCE(w.team, rush_ev.team) AND rush_ev.player_id=w.player_id
-GROUP BY 1,2,3,4,7
-ORDER BY season, week, position, player_name;
+LEFT JOIN sc     ON sc.season=w.season AND sc.week=w.week AND sc.sc_player_id=w.player_id
+LEFT JOIN rec_ev ON rec_ev.season=w.season AND rec_ev.week=w.week AND rec_ev.season_type=w.season_type AND rec_ev.player_id=w.player_id
+LEFT JOIN rush_ev ON rush_ev.season=w.season AND rush_ev.week=w.week AND rush_ev.season_type=w.season_type AND rush_ev.player_id=w.player_id
+LEFT JOIN ctx    ON ctx.season=w.season AND ctx.week=w.week AND ctx.season_type=w.season_type AND ctx.team=COALESCE(w.team, rec_ev.team, rush_ev.team)
+GROUP BY w.season, w.week, w.season_type, w.player_id, COALESCE(w.team, rec_ev.team, rush_ev.team);
 
 

@@ -18,6 +18,7 @@ from .lineage import load_lineage, save_lineage, update_dataset_lineage, record_
 from . import version
 from . import importers
 from . import promote
+from .reports import utilization as util_reports
 
 
 logger = structlog.get_logger(__name__)
@@ -160,6 +161,14 @@ def run_update(
                             rc = int(getattr(st, "row_count"))
                     lineage = record_partition_counts(lineage, name, part, int(rc) if rc is not None else rows)
         save_lineage(lineage)
+
+        # Gold materialization for utilization (current season only)
+        try:
+            util_reports.materialize_team_week_context(season=season, season_type="REG")
+            util_reports.materialize_player_week(season=season, season_type="REG")
+            util_reports.smoke_validate_receiving_events(season=season, season_type="REG")
+        except Exception as exc:
+            logger.warning("utilization_gold_materialization_failed", error=str(exc))
 
         # Emit a concise end-of-run summary to stdout/log
         try:

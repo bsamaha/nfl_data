@@ -13,6 +13,6 @@ FROM read_parquet('data/silver/pbp/year=*/**/*.parquet', union_by_name=true)
 WHERE year = (SELECT season FROM params)
   AND season_type = (SELECT season_type FROM params)
   AND rush = 1
-GROUP BY season, week, season_type, team, player_id;
+GROUP BY year, week, season_type, posteam, rusher_player_id;
 
 
