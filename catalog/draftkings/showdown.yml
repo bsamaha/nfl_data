@@ -1,0 +1,62 @@
+name: "DraftKings NFL Showdown"
+version: "2025-09"
+source: "DraftKings Rules Page"
+
+scoring:
+  # Offensive (same as Classic DK PPR with bonuses)
+  passing_td: { points: 4 }
+  passing_yards: { points: 1, per_units: 25, per_yard: 0.04, units: "yards" }
+  passing_300_bonus: { bonus_points: 3, threshold: 300, units: "yards" }
+  interception: { points: -1 }
+  rushing_td: { points: 6 }
+  rushing_yards: { points: 1, per_units: 10, per_yard: 0.1, units: "yards" }
+  rushing_100_bonus: { bonus_points: 3, threshold: 100, units: "yards" }
+  receiving_td: { points: 6 }
+  receiving_yards: { points: 1, per_units: 10, per_yard: 0.1, units: "yards" }
+  receiving_100_bonus: { bonus_points: 3, threshold: 100, units: "yards" }
+  reception: { points: 1 }
+  return_td: { points: 6, types: ["punt", "kickoff", "field_goal"] }
+  fumble_lost: { points: -1 }
+  two_point_conversion: { points: 2, modes: ["pass", "run", "catch"] }
+  offensive_fumble_recovery_td: { points: 6 }
+
+  # Kickers
+  kicker:
+    fg_0_39: 3
+    fg_40_49: 4
+    fg_50_plus: 5
+    pat: 1
+
+  # Defense/Special Teams (DST)
+  dst:
+    sack: 1
+    interception: 2
+    fumble_recovery: 2
+    safety: 2
+    defensive_td: 6
+    blocked_kick: 2
+    kick_punt_return_td: 6
+    two_point_return: 2
+    points_allowed:
+      "0": 10
+      "1-6": 7
+      "7-13": 4
+      "14-20": 1
+      "21-27": 0
+      "28-34": -1
+      "35+": -4
+
+lineup:
+  salary_cap: 50000
+  captain_multiplier:
+    points: 1.5
+    salary: 1.5
+  slots:
+    - slot: "CPT"
+      count: 1
+      eligible_positions: ["QB", "RB", "WR", "TE", "K", "DST"]
+    - slot: "FLEX"
+      count: 5
+      eligible_positions: ["QB", "RB", "WR", "TE", "K", "DST"]
+
+

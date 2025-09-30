@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 import yaml
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class DatasetConfigModel(BaseModel):
@@ -18,7 +18,8 @@ class DatasetConfigModel(BaseModel):
     sort_by: Optional[List[str]] = None
     max_rows_per_file: Optional[int] = None
 
-    @validator("key")
+    @field_validator("key")
+    @classmethod
     def non_empty_keys(cls, v: List[str]) -> List[str]:
         if not v:
             raise ValueError("key must not be empty")

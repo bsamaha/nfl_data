@@ -287,7 +287,7 @@ def render_macro_report() -> None:
         else:
             with st.expander("Definitions", expanded=False):
                 st.markdown(
-                    "- **EPA (Expected Points Added)**: A points-based value for each play measuring how much it changed the team’s expected points, given down, distance, field position, time, etc. Positive EPA means the offense improved its outlook; negative EPA means the defense won the play.\n"
+                    "- **EPA (Expected Points Added)**: A points-based value for each play measuring how much it changed the team's expected points, given down, distance, field position, time, etc. Positive EPA means the offense improved its outlook; negative EPA means the defense won the play.\n"
                     "- **EPA/play**: Average EPA across plays (shown overall and split into pass vs rush). Rough guide: +0.20 is strong; 0 is average; −0.20 is poor.\n"
                     "- **Weekly lines**: Weekly series by season.\n"
                     "- **Season aggregates**: Median across weeks with ±1σ band."
@@ -1130,7 +1130,6 @@ def render_workhorse_rb_report() -> None:
     # High-level KPIs
     total = len(pdf)
     improved = int((pdf["delta"] > 0).sum())
-    declined = int((pdf["delta"] < 0).sum())
     med_delta = float(pdf["delta"].median()) if total else 0.0
     st.subheader("Summary")
     k1, k2, k3 = st.columns(3)

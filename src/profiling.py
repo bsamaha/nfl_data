@@ -1,34 +1,48 @@
 # pyright: reportMissingImports=false, reportMissingModuleSource=false
 from __future__ import annotations
 
-from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import json
 import polars as pl
 
-from .config import DatasetCatalog, DatasetConfig
+from .config import DatasetCatalog
 
 
-def _iter_partitions(root: str, dataset: str, layer: str, partition_keys: List[str], limit_values: Optional[List[str]] = None) -> List[str]:
+def _iter_partitions(
+    root: str,
+    dataset: str,
+    layer: str,
+    partition_keys: List[str],
+    limit_values: Optional[List[str]] = None,
+) -> List[str]:
     base = Path(root) / layer / dataset
     if not partition_keys:
         return [""]
-    # Only support single key for now (year or season)
-    key = partition_keys[0]
-    parts = []
-    if base.exists():
-        for child in base.iterdir():
+
+    parts: List[str] = []
+
+    def _walk(level: int, current_path: Path, prefix: List[str]) -> None:
+        if level == len(partition_keys):
+            parts.append("/".join(prefix))
+            return
+        key = partition_keys[level]
+        if not current_path.exists():
+            return
+        for child in sorted(current_path.iterdir()):
             if not child.is_dir():
                 continue
             name = child.name
             if not name.startswith(f"{key}="):
                 continue
-            if limit_values and name.split("=", 1)[1] not in limit_values:
+            value = name.split("=", 1)[1]
+            if level == 0 and limit_values and value not in limit_values and name not in limit_values:
                 continue
-            parts.append(name)
-    return sorted(parts)
+            _walk(level + 1, child, prefix + [name])
+
+    _walk(0, base, [])
+    return parts
 
 
 def _read_partition_as_polars(root: str, dataset: str, layer: str, partition: str) -> pl.DataFrame:

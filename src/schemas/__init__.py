@@ -103,7 +103,6 @@ def validate_silver(dataset: str, df: pl.DataFrame) -> None:
     elif dataset == "rosters":
         # Expect core keys present
         required = ["season", "week", "player_id", "team"]
-        pdf = df.select([c for c in required if c in df.columns]).to_pandas()
         assert all(c in df.columns for c in required), "rosters silver missing required key columns"
     elif dataset == "injuries":
         required = ["season", "week", "team", "player_id"]

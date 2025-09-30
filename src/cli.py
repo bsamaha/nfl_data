@@ -1,14 +1,12 @@
 # pyright: reportMissingImports=false, reportMissingModuleSource=false
 import os
-import sys
-from pathlib import Path
 from typing import List, Optional
 from datetime import datetime, timezone
 
 import typer
 from dotenv import load_dotenv
 
-from .config import load_dataset_catalog, DatasetCatalog, DatasetConfig
+from .config import load_dataset_catalog, DatasetConfig
 from .logging_setup import configure_logging
 from .lineage import load_lineage, save_lineage, update_dataset_lineage, record_partition_counts
 
