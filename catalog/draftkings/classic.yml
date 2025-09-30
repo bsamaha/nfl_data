@@ -1,0 +1,111 @@
+name: "DraftKings NFL Classic"
+version: "2025-09"
+source: "DraftKings Rules Page"
+
+scoring:
+  # Offensive scoring (DK PPR with yardage bonuses)
+  passing_td:
+    points: 4
+    notes: "Passing TD"
+  passing_yards:
+    points: 1
+    per_units: 25
+    per_yard: 0.04
+    units: "yards"
+    notes: "25 Passing Yards = 1 point"
+  passing_300_bonus:
+    bonus_points: 3
+    threshold: 300
+    units: "yards"
+    notes: "300+ Yard Passing Game"
+  interception:
+    points: -1
+    notes: "Interception thrown"
+  rushing_td:
+    points: 6
+    notes: "Rushing TD"
+  rushing_yards:
+    points: 1
+    per_units: 10
+    per_yard: 0.1
+    units: "yards"
+    notes: "10 Rushing Yards = 1 point"
+  rushing_100_bonus:
+    bonus_points: 3
+    threshold: 100
+    units: "yards"
+    notes: "100+ Yard Rushing Game"
+  receiving_td:
+    points: 6
+    notes: "Receiving TD"
+  receiving_yards:
+    points: 1
+    per_units: 10
+    per_yard: 0.1
+    units: "yards"
+    notes: "10 Receiving Yards = 1 point"
+  receiving_100_bonus:
+    bonus_points: 3
+    threshold: 100
+    units: "yards"
+    notes: "100+ Receiving Yard Game"
+  reception:
+    points: 1
+    notes: "Reception (PPR)"
+  return_td:
+    points: 6
+    types: ["punt", "kickoff", "field_goal"]
+    notes: "Punt/Kickoff/FG Return for TD"
+  fumble_lost:
+    points: -1
+    notes: "Fumble Lost"
+  two_point_conversion:
+    points: 2
+    modes: ["pass", "run", "catch"]
+    notes: "2 Pt Conversion (Pass, Run, or Catch)"
+  offensive_fumble_recovery_td:
+    points: 6
+    notes: "Offensive Fumble Recovery TD"
+
+  # Defense/Special Teams scoring (team DST)
+  dst:
+    sack: 1
+    interception: 2
+    fumble_recovery: 2
+    safety: 2
+    defensive_td: 6
+    blocked_kick: 2
+    kick_punt_return_td: 6
+    two_point_return: 2
+    points_allowed:
+      "0": 10
+      "1-6": 7
+      "7-13": 4
+      "14-20": 1
+      "21-27": 0
+      "28-34": -1
+      "35+": -4
+
+lineup:
+  salary_cap: 50000
+  slots:
+    - slot: "QB"
+      count: 1
+      eligible_positions: ["QB"]
+    - slot: "RB"
+      count: 2
+      eligible_positions: ["RB"]
+    - slot: "WR"
+      count: 3
+      eligible_positions: ["WR"]
+    - slot: "TE"
+      count: 1
+      eligible_positions: ["TE"]
+    - slot: "FLEX"
+      count: 1
+      eligible_positions: ["RB", "WR", "TE"]
+    - slot: "DST"
+      count: 1
+      eligible_positions: ["DST"]
+
+

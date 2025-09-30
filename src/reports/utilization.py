@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 try:
     import structlog  # type: ignore
@@ -38,4 +37,37 @@ def smoke_validate_receiving_events(season: int, season_type: str = "REG") -> No
 def backfill_weekly_from_pbp(season: int, season_type: str = "REG") -> None:
     _run_sql(Path("queries/utilization/backfill/write_weekly_from_pbp.sql"), season, season_type)
 
+
+
+def materialize_player_week_stats(season: int, season_type: str = "REG") -> None:
+    _run_sql(Path("queries/reports/materialize_player_week_stats.sql"), season, season_type)
+
+
+def materialize_player_week_utilization(season: int, season_type: str = "REG") -> None:
+    _run_sql(Path("queries/reports/materialize_player_week_utilization.sql"), season, season_type)
+
+
+def materialize_player_week_utilization_receiving(season: int, season_type: str = "REG") -> None:
+    _run_sql(Path("queries/reports/materialize_player_week_utilization_receiving.sql"), season, season_type)
+
+
+def materialize_player_week_utilization_rushing(season: int, season_type: str = "REG") -> None:
+    _run_sql(Path("queries/reports/materialize_player_week_utilization_rushing.sql"), season, season_type)
+
+
+def materialize_player_week_utilization_wr(season: int, season_type: str = "REG") -> None:
+    _run_sql(Path("queries/reports/materialize_player_week_utilization_wr.sql"), season, season_type)
+
+
+def materialize_player_week_utilization_te(season: int, season_type: str = "REG") -> None:
+    _run_sql(Path("queries/reports/materialize_player_week_utilization_te.sql"), season, season_type)
+
+
+def materialize_player_week_utilization_rb(season: int, season_type: str = "REG") -> None:
+    _run_sql(Path("queries/reports/materialize_player_week_utilization_rb.sql"), season, season_type)
+
+
+
+def materialize_defense_position_points_allowed(season: int, season_type: str = "REG") -> None:
+    _run_sql(Path("queries/reports/materialize_defense_position_points_allowed.sql"), season, season_type)
 

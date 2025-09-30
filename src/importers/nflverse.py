@@ -2,10 +2,31 @@
 from __future__ import annotations
 
 from typing import Optional, Dict, Any, List
+from functools import lru_cache
 import time
 import pandas as pd
 import nfl_data_py as nfl
 import structlog
+import os
+def _retry_params(options: Optional[Dict[str, Any]] = None) -> tuple[int, int]:
+    opts = options or {}
+    env_attempts = os.getenv("IMPORTER_RETRY_ATTEMPTS")
+    env_base = os.getenv("IMPORTER_RETRY_BASE_SECONDS")
+    attempts = opts.get("retry_attempts")
+    base = opts.get("retry_base_seconds")
+    if attempts is None and env_attempts is not None:
+        try:
+            attempts = int(env_attempts)
+        except ValueError:
+            attempts = None
+    if base is None and env_base is not None:
+        try:
+            base = int(env_base)
+        except ValueError:
+            base = None
+    attempts = int(attempts) if attempts is not None else 3
+    base = int(base) if base is not None else 5
+    return attempts, base
 
 
 def _parse_years_arg(years: str) -> list[int]:
@@ -14,6 +35,148 @@ def _parse_years_arg(years: str) -> list[int]:
         start, end = years.split("-")
         return list(range(int(start), int(end) + 1))
     return [int(x) for x in years.split(",") if x.strip()]
+
+
+@lru_cache(maxsize=1)
+def _load_ids_lookup() -> pd.DataFrame:
+    logger = structlog.get_logger(__name__)
+    try:
+        ids_df = nfl.import_ids()
+    except Exception as exc:
+        logger.warning("ids_lookup_fetch_failed", error=str(exc))
+        return pd.DataFrame(columns=["gsis_id"])
+    # Include Player IDs from the broader players dataset for rookies/new entries
+    try:
+        players_df = nfl.import_players()
+        players_df = players_df[[c for c in ["gsis_id", "display_name", "esb_id"] if c in players_df.columns]]
+        ids_df = ids_df.merge(players_df, how="outer", on="gsis_id")
+    except Exception as exc:
+        logger.warning("players_lookup_fetch_failed", error=str(exc))
+    for col in ids_df.columns:
+        try:
+            ids_df[col] = ids_df[col].astype("string")
+        except Exception:
+            ids_df[col] = ids_df[col]
+    if "gsis_id" in ids_df.columns:
+        ids_df["gsis_id"] = ids_df["gsis_id"].str.strip()
+    return ids_df
+
+
+@lru_cache(maxsize=None)
+def _load_schedule_lookup(year: int) -> pd.DataFrame:
+    logger = structlog.get_logger(__name__)
+    try:
+        sched = nfl.import_schedules([year])
+    except Exception as exc:
+        logger.warning("schedule_lookup_fetch_failed", year=year, error=str(exc))
+        return pd.DataFrame(columns=["team", "game_date", "week"])
+    sched = sched.copy()
+    sched["gameday"] = pd.to_datetime(sched.get("gameday"), errors="coerce")
+    long_rows = []
+    for _, row in sched.iterrows():
+        game_date = row.get("gameday")
+        week = row.get("week")
+        for col in ("home_team", "away_team"):
+            team = row.get(col)
+            if pd.isna(team) or pd.isna(game_date):
+                continue
+            long_rows.append({
+                "team": str(team),
+                "game_date": game_date.normalize(),
+                "week": week,
+            })
+    if not long_rows:
+        return pd.DataFrame(columns=["team", "game_date", "week"])
+    out = pd.DataFrame(long_rows)
+    out["team"] = out["team"].astype("string")
+    out["week"] = pd.to_numeric(out["week"], errors="coerce").astype("Int64")
+    return out.drop_duplicates(subset=["team", "game_date"])
+
+
+def _assign_weeks_from_schedule(df: pd.DataFrame, year: int) -> pd.Series:
+    if df.empty or "dt" not in df.columns or "team" not in df.columns:
+        return pd.Series(pd.NA, index=df.index, dtype="Int64")
+    schedule = _load_schedule_lookup(year).copy()
+    if schedule.empty:
+        return pd.Series(pd.NA, index=df.index, dtype="Int64")
+    schedule["game_datetime"] = pd.to_datetime(schedule["game_date"], errors="coerce")
+    schedule = schedule.dropna(subset=["team", "game_datetime"])
+    if schedule.empty:
+        return pd.Series(pd.NA, index=df.index, dtype="Int64")
+    left = df[["team", "dt"]].copy()
+    left = left.dropna(subset=["team", "dt"])
+    if left.empty:
+        return pd.Series(pd.NA, index=df.index, dtype="Int64")
+    left = left.reset_index().rename(columns={"index": "__idx"})
+    left["dt_local"] = pd.to_datetime(left["dt"], errors="coerce", utc=True)
+    left["dt_local"] = left["dt_local"].dt.tz_localize(None)
+    left = left.dropna(subset=["dt_local"])
+    if left.empty:
+        return pd.Series(pd.NA, index=df.index, dtype="Int64")
+    left = left.sort_values(["team", "dt_local"])
+    schedule = schedule.sort_values(["team", "game_datetime"])
+    merged = pd.merge_asof(
+        left,
+        schedule,
+        left_on="dt_local",
+        right_on="game_datetime",
+        by="team",
+        direction="nearest",
+        tolerance=pd.Timedelta(days=6),
+    )
+    week_series = pd.Series(pd.NA, index=df.index, dtype="Int64")
+    valid = merged.dropna(subset=["week", "__idx"])
+    if not valid.empty:
+        week_values = pd.to_numeric(valid["week"], errors="coerce").astype("Int64")
+        week_series.loc[valid["__idx"].astype(int)] = week_values
+    return week_series
+
+
+def _fill_player_id_fallbacks(df: pd.DataFrame, fallbacks: List[tuple[str, str]]) -> pd.Series:
+    if "player_id" not in df.columns:
+        df["player_id"] = pd.NA
+    df["player_id"] = df["player_id"].astype("string")
+    for col, prefix in fallbacks:
+        if col not in df.columns:
+            continue
+        values = df[col].astype("string")
+        values = values.where(values.notna())
+        if values is None:
+            continue
+        if prefix:
+            values = prefix + values
+        df["player_id"] = df["player_id"].fillna(values)
+    df["player_id"] = df["player_id"].astype("string")
+    return df["player_id"]
+
+
+def _resolve_player_ids(df: pd.DataFrame, candidates: List[tuple[str, str]]) -> pd.Series:
+    ids_df = _load_ids_lookup()
+    if df.empty:
+        return pd.Series(dtype="string")
+    result = pd.Series(pd.NA, index=df.index, dtype="string")
+    for src_col, lookup_col in candidates:
+        if src_col not in df.columns:
+            continue
+        src_values = df[src_col].astype("string", copy=False)
+        src_values = src_values.where(src_values.notna())
+        if lookup_col == "gsis_id":
+            resolved = src_values
+        else:
+            if lookup_col not in ids_df.columns:
+                continue
+            mapping_df = ids_df[[lookup_col, "gsis_id"]].dropna()
+            if mapping_df.empty:
+                continue
+            mapping_df = mapping_df.astype("string")
+            mapping_df = mapping_df[mapping_df[lookup_col].str.len() > 0]
+            mapping_df = mapping_df[mapping_df["gsis_id"].str.len() > 0]
+            if mapping_df.empty:
+                continue
+            mapping = mapping_df.set_index(lookup_col)["gsis_id"].to_dict()
+            resolved = src_values.map(mapping)
+        result = result.fillna(resolved.astype("string"))
+    return result.astype("string")
 
 
 def _with_const_col(df: pd.DataFrame, col: str, val: Any) -> pd.DataFrame:
@@ -50,7 +213,7 @@ def fetch_pbp(years: str, options: Optional[Dict[str, Any]] = None) -> pd.DataFr
             if cache and "cache file does not exist" in msg:
                 try:
                     df_y = nfl.import_pbp_data([yr], downcast=downcast, cache=False)
-                except Exception as exc2:
+                except Exception:
                     # Fallback to direct read from release asset via DuckDB
                     try:
                         import duckdb
@@ -63,7 +226,7 @@ def fetch_pbp(years: str, options: Optional[Dict[str, Any]] = None) -> pd.DataFr
                 # Retry once without cache for any unexpected error
                 try:
                     df_y = nfl.import_pbp_data([yr], downcast=downcast, cache=False)
-                except Exception as exc2:
+                except Exception:
                     try:
                         import duckdb
                         url = f"https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{yr}.parquet"
@@ -89,6 +252,52 @@ def fetch_schedules(years: str, options: Optional[Dict[str, Any]] = None) -> pd.
             logger.error("schedules_fetch_failed", year=yr, error=str(exc))
             continue
         df_y = _with_const_col(df_y, "season", yr)
+        df_y["season"] = pd.to_numeric(df_y["season"], errors="coerce").astype("Int64")
+        if "dt" in df_y.columns:
+            df_y["dt"] = pd.to_datetime(df_y["dt"], errors="coerce", utc=True)
+        if "pos_slot" in df_y.columns:
+            df_y["pos_slot"] = pd.to_numeric(df_y["pos_slot"], errors="coerce").astype("Int64")
+        if "pos_abb" in df_y.columns:
+            df_y["position"] = df_y["pos_abb"].astype("string")
+        elif "pos_name" in df_y.columns:
+            df_y["position"] = df_y["pos_name"].astype("string")
+        else:
+            df_y["position"] = pd.NA
+        df_y["player_id"] = _resolve_player_ids(
+            df_y,
+            [
+                ("gsis_id", "gsis_id"),
+                ("espn_id", "espn_id"),
+                ("pfr_player_id", "pfr_id"),
+            ],
+        )
+        if "dt" in df_y.columns:
+            schedule_lookup = _load_schedule_lookup(yr).copy()
+            if not schedule_lookup.empty:
+                df_y["team"] = df_y.get("team", pd.Series(dtype="string")).astype("string")
+                try:
+                    dt_naive = df_y["dt"].dt.tz_convert(None)
+                except TypeError:
+                    dt_naive = df_y["dt"].dt.tz_localize(None)
+                df_y["dt_date"] = dt_naive.dt.normalize()
+                schedule_lookup["game_date_normalized"] = pd.to_datetime(schedule_lookup["game_date"], errors="coerce").dt.normalize()
+                merged = df_y.merge(
+                    schedule_lookup,
+                    how="left",
+                    left_on=["team", "dt_date"],
+                    right_on=["team", "game_date_normalized"],
+                )
+                df_y["week"] = pd.to_numeric(merged["week"], errors="coerce").astype("Int64")
+                df_y.drop(columns=["dt_date"], inplace=True)
+            else:
+                df_y["week"] = pd.NA
+        missing = int(df_y["player_id"].isna().sum())
+        if missing:
+            logger.warning(
+                "depth_charts_player_id_missing",
+                year=yr,
+                rows_missing=missing,
+            )
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No schedules data fetched for any requested year")
@@ -101,8 +310,7 @@ def fetch_weekly(years: str, options: Optional[Dict[str, Any]] = None) -> pd.Dat
     frames: List[pd.DataFrame] = []
     for yr in year_list:
         df_y = None
-        attempts = int((options or {}).get("retry_attempts", 3))
-        base_sleep = int((options or {}).get("retry_base_seconds", 5))
+        attempts, base_sleep = _retry_params(options)
         for attempt in range(1, attempts + 1):
             try:
                 df_y = nfl.import_weekly_data([yr])
@@ -110,13 +318,28 @@ def fetch_weekly(years: str, options: Optional[Dict[str, Any]] = None) -> pd.Dat
             except Exception as exc:
                 msg = str(exc)
                 if "404" in msg or "Not Found" in msg:
+                    # On 404s, immediately try the nflverse release parquet for weekly stats
                     logger.warning("weekly_fetch_retry", year=yr, attempt=attempt, error=msg)
-                    if attempt < attempts:
-                        time.sleep(base_sleep * attempt)
-                    continue
-                logger.error("weekly_fetch_failed", year=yr, error=msg)
-                df_y = None
-                break
+                    try:
+                        import duckdb
+                        url = f"https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{yr}.parquet"
+                        df_y = duckdb.sql(f"SELECT * FROM read_parquet('{url}')").to_df()
+                        break
+                    except Exception as exc_fallback:
+                        logger.warning("weekly_release_fallback_failed", year=yr, attempt=attempt, error=str(exc_fallback))
+                        if attempt < attempts:
+                            time.sleep(base_sleep * attempt)
+                        continue
+                # For non-404 errors, attempt the nflverse release once as a fallback too
+                try:
+                    import duckdb
+                    url = f"https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{yr}.parquet"
+                    df_y = duckdb.sql(f"SELECT * FROM read_parquet('{url}')").to_df()
+                    break
+                except Exception as exc_fallback:
+                    logger.error("weekly_release_fallback_failed", year=yr, error=str(exc_fallback))
+                    df_y = None
+                    break
         if df_y is None:
             # Fallback: derive minimal weekly from PBP + rosters for the season
             try:
@@ -175,6 +398,23 @@ def fetch_weekly(years: str, options: Optional[Dict[str, Any]] = None) -> pd.Dat
                 logger.error("weekly_fallback_failed", year=yr, error=str(exc_fb))
                 continue
         df_y = _with_const_col(df_y, "season", yr)
+        if "player" in df_y.columns and "player_name" not in df_y.columns:
+            df_y = df_y.rename(columns={"player": "player_name"})
+        df_y["player_id"] = _resolve_player_ids(
+            df_y,
+            [
+                ("gsis_id", "gsis_id"),
+                ("pfr_player_id", "pfr_id"),
+                ("espn_id", "espn_id"),
+            ],
+        )
+        missing = int(df_y["player_id"].isna().sum())
+        if missing:
+            logger.warning(
+                "snap_counts_player_id_missing",
+                year=yr,
+                rows_missing=missing,
+            )
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No weekly data fetched for any requested year")
@@ -226,8 +466,7 @@ def fetch_injuries(years: str, options: Optional[Dict[str, Any]] = None) -> pd.D
     frames: List[pd.DataFrame] = []
     for yr in year_list:
         df_y = None
-        attempts = int((options or {}).get("retry_attempts", 3))
-        base_sleep = int((options or {}).get("retry_base_seconds", 5))
+        attempts, base_sleep = _retry_params(options)
         for attempt in range(1, attempts + 1):
             try:
                 if hasattr(nfl, "import_injuries"):
@@ -269,6 +508,50 @@ def fetch_depth_charts(years: str, options: Optional[Dict[str, Any]] = None) -> 
             logger.error("depth_charts_fetch_failed", year=yr, error=str(exc))
             continue
         df_y = _with_const_col(df_y, "season", yr)
+        df_y["season"] = pd.to_numeric(df_y["season"], errors="coerce").astype("Int64")
+        if "dt" in df_y.columns:
+            df_y["dt"] = pd.to_datetime(df_y["dt"], errors="coerce", utc=True)
+        if "pos_slot" in df_y.columns:
+            df_y["pos_slot"] = pd.to_numeric(df_y["pos_slot"], errors="coerce").astype("Int64")
+        if "pos_abb" in df_y.columns:
+            df_y["position"] = df_y["pos_abb"].astype("string")
+        elif "pos_name" in df_y.columns:
+            df_y["position"] = df_y["pos_name"].astype("string")
+        else:
+            df_y["position"] = pd.NA
+        df_y["player_id"] = _resolve_player_ids(
+            df_y,
+            [
+                ("gsis_id", "gsis_id"),
+                ("espn_id", "espn_id"),
+                ("pfr_player_id", "pfr_id"),
+            ],
+        )
+        if "dt" in df_y.columns:
+            schedule_lookup = _load_schedule_lookup(yr)
+            if not schedule_lookup.empty:
+                df_y["team"] = df_y.get("team", pd.Series(dtype="string")).astype("string")
+                dt_naive = df_y["dt"].dt.tz_localize(None)
+                df_y["dt_date"] = dt_naive.dt.normalize()
+                merged = df_y.merge(
+                    schedule_lookup,
+                    how="left",
+                    left_on=["team", "dt_date"],
+                    right_on=["team", "game_date"],
+                )
+                df_y["week"] = pd.to_numeric(merged["week"], errors="coerce").astype("Int64")
+                df_y.drop(columns=["dt_date"], inplace=True)
+            else:
+                df_y["week"] = pd.NA
+        else:
+            df_y["week"] = pd.NA
+        missing = int(df_y["player_id"].isna().sum())
+        if missing:
+            logger.warning(
+                "depth_charts_player_id_missing",
+                year=yr,
+                rows_missing=missing,
+            )
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No depth_charts data fetched for any requested year")
@@ -289,6 +572,23 @@ def fetch_snap_counts(years: str, options: Optional[Dict[str, Any]] = None) -> p
             logger.error("snap_counts_fetch_failed", year=yr, error=str(exc))
             continue
         df_y = _with_const_col(df_y, "season", yr)
+        if "player" in df_y.columns and "player_name" not in df_y.columns:
+            df_y = df_y.rename(columns={"player": "player_name"})
+        df_y["player_id"] = _resolve_player_ids(
+            df_y,
+            [
+                ("gsis_id", "gsis_id"),
+                ("pfr_player_id", "pfr_id"),
+                ("espn_id", "espn_id"),
+            ],
+        )
+        missing = int(df_y["player_id"].isna().sum())
+        if missing:
+            logger.warning(
+                "snap_counts_player_id_missing",
+                year=yr,
+                rows_missing=missing,
+            )
         frames.append(df_y)
     if not frames:
         raise RuntimeError("No snap_counts data fetched for any requested year")

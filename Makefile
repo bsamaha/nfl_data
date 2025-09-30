@@ -2,7 +2,11 @@ VENV=.venv
 PY=$(VENV)/bin/python
 PIP=$(VENV)/bin/pip
 
-.PHONY: venv install bootstrap update recache fmt app
+.PHONY: app
+app:
+	streamlit run app/Home.py --server.port 8501 --server.headless true
+
+.PHONY: venv install bootstrap update recache fmt
 
 venv:
 	python -m venv $(VENV)
@@ -21,11 +25,4 @@ recache:
 
 fmt:
 	$(PY) -m black src || true
-
-app: install macro-report
-	$(VENV)/bin/streamlit run src/app_streamlit.py
-
-.PHONY: macro-report
-macro-report: install
-	$(PY) src/reports/macro_report.py
 

@@ -2,20 +2,16 @@
 from __future__ import annotations
 
 import concurrent.futures
-import os
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import List, Optional
 
-from filelock import FileLock, Timeout, BaseFileLock
+from filelock import FileLock, BaseFileLock
 import structlog
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 from .config import DatasetCatalog, DatasetConfig
-from .logging_setup import configure_logging, log_run_event
+from .logging_setup import log_run_event
 from .lineage import load_lineage, save_lineage, update_dataset_lineage, record_partition_counts
-from . import version
 from . import importers
 from . import promote
 from .reports import utilization as util_reports
@@ -162,17 +158,21 @@ def run_update(
                     lineage = record_partition_counts(lineage, name, part, int(rc) if rc is not None else rows)
         save_lineage(lineage)
 
-        # Gold materialization for utilization (current season only)
+        # Report materialization (current season only)
         try:
-            util_reports.materialize_team_week_context(season=season, season_type="REG")
-            # If weekly data missing for current season, attempt a PBP-derived backfill first
             weekly_dir = Path("data/silver/weekly/season=") / str(season)
             if not weekly_dir.exists():
+                # Minimal backfill to ensure weekly exists for reports
                 util_reports.backfill_weekly_from_pbp(season=season, season_type="REG")
-            util_reports.materialize_player_week(season=season, season_type="REG")
-            util_reports.smoke_validate_receiving_events(season=season, season_type="REG")
+            util_reports.materialize_player_week_stats(season=season, season_type="REG")
+            util_reports.materialize_player_week_utilization_receiving(season=season, season_type="REG")
+            util_reports.materialize_player_week_utilization_rushing(season=season, season_type="REG")
+            util_reports.materialize_player_week_utilization_wr(season=season, season_type="REG")
+            util_reports.materialize_player_week_utilization_te(season=season, season_type="REG")
+            util_reports.materialize_player_week_utilization_rb(season=season, season_type="REG")
+            util_reports.materialize_defense_position_points_allowed(season=season, season_type="REG")
         except Exception as exc:
-            logger.warning("utilization_gold_materialization_failed", error=str(exc))
+            logger.warning("report_materialization_failed", error=str(exc))
 
         # Emit a concise end-of-run summary to stdout/log
         try:
@@ -180,7 +180,7 @@ def run_update(
             failed = []
             for cfg in selected:
                 try:
-                    ds_lineage = lineage.get("datasets", {}).get(cfg.name, {})
+                    ds_lineage = lineage.get(cfg.name, {})
                     last_rows = int(ds_lineage.get("rows_last_batch", 0))
                     parts = ds_lineage.get("changed_partitions", []) or []
                     succeeded.append((cfg.name, last_rows, parts))

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import pandas as pd
 import pyarrow as pa
@@ -56,7 +56,6 @@ def write_parquet_dataset(
         if cols:
             df = df.sort_values(by=cols, kind="mergesort")
     table = pa.Table.from_pandas(df, preserve_index=False)
-    file_size = row_group_mb * 1024 * 1024
 
     # Configure Parquet writer options
     parquet_format = ds.ParquetFileFormat()

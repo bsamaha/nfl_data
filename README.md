@@ -24,6 +24,12 @@ python -m src.cli update --season 2025
 duckdb -c "SELECT season, COUNT(*) FROM read_parquet('data/silver/weekly/season=*/**/*.parquet') GROUP BY season ORDER BY season"
 ```
 
+### Running tests
+
+```bash
+python -m pytest
+```
+
 ## What’s inside
 
 - Architecture and plan: `plan.md`

@@ -21,9 +21,9 @@ COPY (
         GROUP BY season, week, team
       ), pbp AS (
         SELECT year AS season, week, season_type, posteam AS team,
-               SUM(CASE WHEN qb_dropback=1 THEN 1 ELSE 0 END) AS team_dropbacks,
-               SUM(CASE WHEN pass=1 THEN 1 ELSE 0 END)        AS team_pass_attempts,
-               SUM(CASE WHEN rush=1 THEN 1 ELSE 0 END)        AS team_carries
+               SUM(CASE WHEN qb_dropback=1 THEN 1 ELSE 0 END)          AS team_dropbacks,
+               SUM(CASE WHEN pass_attempt=1 AND sack=0 THEN 1 ELSE 0 END) AS team_pass_attempts,
+               SUM(CASE WHEN rush_attempt=1 THEN 1 ELSE 0 END)         AS team_carries
         FROM read_parquet('data/silver/pbp/year=*/**/*.parquet', union_by_name=true)
         WHERE year = (SELECT season FROM params)
           AND season_type = (SELECT season_type FROM params)

@@ -2,17 +2,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+import hashlib
 
 import pandas as pd
 import polars as pl
 import structlog
 
 from .config import DatasetConfig
-from .io import ensure_dir, write_parquet_dataset, remove_dir, move_replace
+from .io import write_parquet_dataset, remove_dir, move_replace
 from .schemas import validate_bronze, validate_silver
 from .transforms import to_silver
 from .lineage import PartitionStats, compute_sha256_for_keys
+from . import version
 
 logger = structlog.get_logger(__name__)
 
@@ -31,20 +33,15 @@ def discover_changed_partitions(df: pd.DataFrame, partitions: List[str]) -> List
 def write_bronze_and_collect(
     root: str, cfg: DatasetConfig, df: pd.DataFrame, run_id: Optional[str] = None, ingested_at_iso: Optional[str] = None
 ) -> Tuple[List[str], Dict[str, PartitionStats]]:
-    # Stamp minimal metadata columns
-    # Vectorized assignment to avoid pandas fragmentation
-    if True:
-        new_cols: Dict[str, object] = {}
-        if "source" not in df.columns:
-            new_cols["source"] = "nflverse"
-        if "pipeline_version" not in df.columns:
-            new_cols["pipeline_version"] = "0.1.0"
-        if run_id is not None and "run_id" not in df.columns:
-            new_cols["run_id"] = run_id
-        if ingested_at_iso is not None and "ingested_at" not in df.columns:
-            new_cols["ingested_at"] = ingested_at_iso
-        if new_cols:
-            df = pd.concat([df, pd.DataFrame({k: [v] * len(df) for k, v in new_cols.items()})], axis=1)
+    # Stamp minimal metadata columns without inducing fragmentation
+    if "source" not in df.columns:
+        df = df.assign(source="nflverse")
+    if "pipeline_version" not in df.columns:
+        df = df.assign(pipeline_version=version.PIPELINE_VERSION)
+    if run_id is not None and "run_id" not in df.columns:
+        df = df.assign(run_id=run_id)
+    if ingested_at_iso is not None and "ingested_at" not in df.columns:
+        df = df.assign(ingested_at=ingested_at_iso)
     # Normalize partition columns to stable dtypes (avoid '2009.0' partition names)
     for part_col in cfg.partitions:
         if part_col in df.columns:
@@ -66,8 +63,27 @@ def write_bronze_and_collect(
         partitions=cfg.partitions,
         max_rows_per_file=cfg.max_rows_per_file,
     )
-    # Minimal partition stats (row counts only for now)
-    part_stats = {part: PartitionStats(row_count=int(len(df)), sha256_fingerprint="") for part in changed}
+    part_stats: Dict[str, PartitionStats] = {}
+    if cfg.partitions:
+        grouped = (
+            df.groupby(cfg.partitions, dropna=False)
+            .size()
+            .reset_index(name="row_count")
+        )
+        for _, row in grouped.iterrows():
+            values = [row[col] for col in cfg.partitions]
+            part = "".join(
+                f"{col}={val}/" for col, val in zip(cfg.partitions, values)
+            ).rstrip("/")
+            if part in changed:
+                part_stats[part] = PartitionStats(
+                    row_count=int(row["row_count"]),
+                    sha256_fingerprint="",
+                )
+    else:
+        part_stats["all"] = PartitionStats(
+            row_count=int(len(df)), sha256_fingerprint=""
+        )
     return changed, part_stats
 
 
@@ -419,14 +435,19 @@ def promote_to_silver(
         # Fingerprint on keys
         keys = [k for k in cfg.key if k in df_silver.columns]
         if keys:
-            key_series = (
-                df_silver.select(
+            h = hashlib.sha256()
+
+            def _hash_batch(batch: pl.DataFrame) -> None:
+                vals = batch.select(
                     pl.concat_str([pl.col(k).cast(pl.Utf8) for k in keys], separator="|").alias("__k")
-                )
-                .to_series()
-                .to_list()
-            )
-            fp = compute_sha256_for_keys(key_series)
+                )["__k"].to_list()
+                if vals:
+                    h.update(compute_sha256_for_keys(vals).encode("utf-8"))
+
+            stream = df_silver.iter_slices(n_rows=100_000)
+            for chunk in stream:
+                _hash_batch(pl.DataFrame(chunk))
+            fp = h.hexdigest()
         else:
             fp = ""
         # Min/max ingested_at if present

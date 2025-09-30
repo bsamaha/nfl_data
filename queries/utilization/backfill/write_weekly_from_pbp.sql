@@ -32,6 +32,6 @@ COPY (
   FROM rec r
   LEFT JOIN rost ro
     ON ro.season=r.season AND ro.week=r.week AND ro.team=r.team AND ro.player_id=r.player_id
-) TO 'data/silver/weekly/part.parquet' (FORMAT PARQUET, PARTITION_BY (season));
+) TO 'data/silver/weekly/part.parquet' (FORMAT PARQUET, PARTITION_BY (season), OVERWRITE_OR_IGNORE 1);
 
 
