@@ -1,0 +1,87 @@
+# DraftKings NFL scoring and lineup rules. No code reads this file yet.
+# The previous team copied the values from the DraftKings rules pages and labelled them 2025-04 (best ball)
+# and 2025-09 (classic, showdown). They have not been re-checked for the 2026 season.
+
+# Points for offensive players. The same in classic, showdown and best ball.
+offense:
+  passing_yards: 0.04  # per yard
+  passing_td: 4
+  passing_300_bonus: {threshold: 300, points: 3}
+  interception: -1
+  rushing_yards: 0.1  # per yard
+  rushing_td: 6
+  rushing_100_bonus: {threshold: 100, points: 3}
+  receiving_yards: 0.1  # per yard
+  receiving_td: 6
+  receiving_100_bonus: {threshold: 100, points: 3}
+  reception: 1
+  fumble_lost: -1
+  two_point_conversion: 2  # pass, run or catch
+  return_td: 6  # punt, kickoff or field goal return
+  offensive_fumble_recovery_td: 6
+
+# Team defense and special teams. Used in classic and showdown.
+dst:
+  sack: 1
+  interception: 2
+  fumble_recovery: 2
+  safety: 2
+  defensive_td: 6
+  blocked_kick: 2
+  kick_punt_return_td: 6
+  two_point_return: 2
+  points_allowed:
+    "0": 10
+    "1-6": 7
+    "7-13": 4
+    "14-20": 1
+    "21-27": 0
+    "28-34": -1
+    "35+": -4
+
+# Kickers. Used in showdown only.
+kicker:
+  fg_0_39: 3
+  fg_40_49: 4
+  fg_50_plus: 5
+  pat: 1
+
+contests:
+  classic:
+    salary_cap: 50000
+    slots: {QB: 1, RB: 2, WR: 3, TE: 1, FLEX: 1, DST: 1}
+    flex_positions: [RB, WR, TE]
+
+  showdown:
+    salary_cap: 50000
+    captain_multiplier: {points: 1.5, salary: 1.5}
+    slots: {CPT: 1, FLEX: 5}
+    flex_positions: [QB, RB, WR, TE, K, DST]  # CPT takes the same positions
+
+  bestball:
+    roster_size: 20
+    slots: {QB: 1, RB: 2, WR: 3, TE: 1, FLEX: 1}  # the weekly starters
+    flex_positions: [RB, WR, TE]
+    # A scoring period runs Thursday through the following Wednesday. If a team plays twice in a period,
+    # only the first full game counts.
+    rounds:  # tournament round: NFL weeks
+      1: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+      2: [15]
+      3: [16]
+      4: [17]
+    advancement: >-
+      At the end of each round a specified number of entries advance from each contest based on placement.
+      The remaining wild-card spots go to the highest-scoring entries across the round that did not advance.
+      Advancing entries keep the same drafted roster.
+    tie_breakers:  # applied in order within a round
+      - highest single-week score in the round
+      - next-highest single-week score, and so on through the lowest-scoring week in the round
+      - highest-scoring single player in the round
+      - next-highest-scoring single player, and so on
+      - highest cumulative score through all completed rounds
+      - earliest draft slot
+    draft_limits:  # as labelled 2025-04; not verified
+      min_teams: 2
+      max_qb: 5
+      max_te: 5
+      auto_draft_caps: {QB: 3, RB: 6, WR: 8, TE: 3}
