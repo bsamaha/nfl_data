@@ -1,7 +1,6 @@
 # pyright: reportMissingImports=false, reportMissingModuleSource=false
 from __future__ import annotations
 
-from typing import Optional
 import pandas as pd
 
 from ..config import DatasetConfig
@@ -70,9 +69,7 @@ def fetch_dataset_bootstrap(cfg: DatasetConfig, years: str) -> pd.DataFrame:
     raise NotImplementedError(f"Importer not implemented: {cfg.importer}")
 
 
-def fetch_dataset_update(
-    cfg: DatasetConfig, season: int, since: Optional[str]
-) -> pd.DataFrame:
+def fetch_dataset_update(cfg: DatasetConfig, season: int) -> pd.DataFrame:
     if cfg.importer == "pbp":
         return fetch_pbp(years=str(season), options=cfg.options)
     if cfg.importer == "schedules":

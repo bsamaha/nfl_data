@@ -1,74 +1,111 @@
 # Local NFL Data Lake
 
-Parquet-based lake for NFL analytics with Bronze/Silver layers, a Typer CLI, partition-aware incremental promotes, and DuckDB for querying.
+A local NFL lakehouse: Parquet files on disk in bronze and silver layers, queried with DuckDB, with a Typer CLI, a YAML dataset catalog and Streamlit pages.
 
-## Quick start
+## Status
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+The repo is being rebuilt in place. The steps, in order:
 
-# 1) Bootstrap history (idempotent)
-python -m src.cli bootstrap --years 1999-2024
+1. Source inventory. Done: `docs/SOURCE_INVENTORY.md`.
+2. Clean project. Done: pinned Python and dependencies, dead code and committed run output removed, tests run with plain `pytest`.
+3. Rebuild ingest.
+4. Core tables.
+5. Features.
+6. First projection.
+7. Rebuild the app.
 
-# 2) Promote any existing bronze to silver (partition-scoped)
-python -m src.cli promote --datasets weekly,schedules,rosters,injuries,depth_charts,snap_counts
+Until step 3 lands, the pipeline under `src/` is the previous team's code. It installs and its tests pass, but it is known to lose corrections, duplicate rows and record failed runs as successes, so do not rely on data it produces. The Streamlit pages import `app/lib/data.py`, which was never committed, so no page loads until step 7.
 
-# 3) Profile silver quality by partition
-python -m src.cli profile --layer silver --datasets weekly,schedules,rosters,injuries,depth_charts,snap_counts
+## Install and test
 
-# 4) In-season update (when upstream publishes 2025 data)
-python -m src.cli update --season 2025
+You need [uv](https://docs.astral.sh/uv/) and nothing else: no bash, no Make and no DuckDB command-line tool. The commands are the same in PowerShell, cmd and a Unix shell. Run them from the repo root.
 
-# Query examples
-duckdb -c "SELECT season, COUNT(*) FROM read_parquet('data/silver/weekly/season=*/**/*.parquet') GROUP BY season ORDER BY season"
+```
+uv sync
+uv run pytest
 ```
 
-### Running tests
+`uv sync` creates `.venv` from `uv.lock`, and downloads Python 3.12 first if you do not have it (the version is set in `.python-version`). The expected test result is 26 passed and 1 skipped. The skipped module is `tests/test_defense_report.py`, which needs the missing `app/lib/data.py`.
 
-```bash
-python -m pytest
+To add or upgrade a dependency, edit `pyproject.toml` and run `uv lock`, then commit both files.
+
+## Commands
+
+These replace the old Makefile. Each one runs inside the locked environment.
+
+| Old Makefile target | Command |
+|---|---|
+| `make install` | `uv sync` |
+| `make bootstrap` | `uv run python -m src.cli bootstrap --years 1999-2025` |
+| `make update` | `uv run python -m src.cli update --season 2026` |
+| `make recache` | `uv run python -m src.cli recache-pbp --season 2026` |
+| `make app` | `uv run streamlit run app/Home.py` |
+| `make fmt` | `uvx black src` |
+
+The CLI has two more commands, and `--help` lists the options of each:
+
+```
+uv run python -m src.cli --help
+
+# Promote existing bronze to silver without fetching
+uv run python -m src.cli promote --datasets weekly,schedules
+
+# Write partition metrics for a layer
+uv run python -m src.cli profile --layer silver --datasets weekly
 ```
 
-## What’s inside
+`bootstrap`, `update` and `recache-pbp` download from nflverse and run the old pipeline described under Status. `update` also tries to build the reports in `queries/reports/` by calling `bash scripts/run_query.sh`, which needs bash and the DuckDB command-line tool. Without them it logs `report_materialization_failed` and carries on.
 
-- Architecture and plan: `plan.md`
-- Technical overview: `docs/TECHNICAL_OVERVIEW.md`
-- Dataset catalog/config: `catalog/datasets.yml`
-- Lineage and quality outputs: `catalog/lineage.json`, `catalog/quality/`
+### Querying
+
+Query the lake from Python. DuckDB runs in-process:
+
+```python
+import duckdb
+
+rows = duckdb.sql("""
+    SELECT season, COUNT(*) AS n
+    FROM read_parquet('data/silver/weekly/season=*/**/*.parquet')
+    GROUP BY season
+    ORDER BY season
+""").fetchall()
+for season, n in rows:
+    print(season, n)
+```
+
+Save it as a file and run it with `uv run python your_file.py`.
+
+## What's inside
+
+- Source contracts for every nflverse dataset: `docs/SOURCE_INVENTORY.md`
+- Technical overview of the old pipeline: `docs/TECHNICAL_OVERVIEW.md`
+- Dataset catalog: `catalog/datasets.yml`
+- DraftKings rule files: `catalog/draftkings/`
+- Lineage and quality output: `catalog/lineage.json` and `catalog/quality/`. Pipeline runs write them and git ignores them.
 - DraftKings Best Ball rules dataset: `data/silver/dk_bestball/`
 
-## CLI commands
+## Scheduling
 
-```bash
-# See available commands
-python -m src.cli --help
+Wait for the rebuilt ingest (step 3) before scheduling anything. The examples show the shape of a job, with `/path/to/nfl_data` standing for your clone.
 
-# Historical backfill (select datasets)
-python -m src.cli bootstrap --years 2012-2024 --datasets injuries,depth_charts,snap_counts
+`uv run --directory` sets the working directory, which the CLI needs because it reads `catalog/` and writes `data/` and `logs/` relative to it. `bootstrap` and `update` take their own lock on `.lake.lock`, so do not wrap them in `flock` on that file. The earlier examples did, and such a job blocks on its own lock forever.
 
-# Promote existing bronze → silver (no fetch)
-python -m src.cli promote --datasets weekly,schedules
+cron:
 
-# Profile partition metrics
-python -m src.cli profile --layer silver --datasets weekly
 ```
-
-## Scheduling (cron examples)
-
-```bash
-# 03:30 in-season nightly
-30 3 * 9-2 * cd /home/r16/workspace/nfl_data && flock -n .lake.lock -- python -m src.cli update --season 2025 | ts | tee -a logs/cron_update.log
-# Thu corrections re-pull
-0 6 * 9-2 4 cd /home/r16/workspace/nfl_data && flock -n .lake.lock -- python -m src.cli recache-pbp --season 2025 | ts | tee -a logs/cron_recache.log
+# 03:30 nightly, September to February
+30 3 * 9-12,1-2 * uv run --directory /path/to/nfl_data python -m src.cli update --season 2026 >> /path/to/nfl_data/logs/cron_update.log 2>&1
+# Thursday re-pull of play-by-play corrections
+0 6 * 9-12,1-2 4 uv run --directory /path/to/nfl_data python -m src.cli recache-pbp --season 2026 >> /path/to/nfl_data/logs/cron_recache.log 2>&1
 # Schedules daily
-5 4 * * * cd /home/r16/workspace/nfl_data && flock -n .lake.lock -- python -m src.cli update --season 2025 --datasets schedules | ts | tee -a logs/cron_schedules.log
+5 4 * * * uv run --directory /path/to/nfl_data python -m src.cli update --season 2026 --datasets schedules >> /path/to/nfl_data/logs/cron_schedules.log 2>&1
 ```
+
+Windows Task Scheduler: create a task whose action has Program `uv` and Arguments `run --directory C:\path\to\nfl_data python -m src.cli update --season 2026`.
 
 ## Notes
 
-- Weekly 2025 may 404 until upstream publishes; re-run `update` later or use `promote` on existing Bronze.
-- Optional datasets are scaffolded (`officials`, `win_totals`, `scoring_lines`, `draft_picks`, `combine`); enable in `catalog/datasets.yml` when needed.
+- Optional datasets are scaffolded (`officials`, `win_totals`, `scoring_lines`, `draft_picks`, `combine`); enable them in `catalog/datasets.yml` when needed.
 
 
 ## DraftKings Best Ball (rules, playoffs, and analytics)

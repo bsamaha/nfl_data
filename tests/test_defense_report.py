@@ -12,7 +12,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.lib import data as report_data  # noqa: E402
+# app/lib/data.py was never committed: the old `lib/` rule in .gitignore excluded it, and it
+# is not in git history. Skip this module until the app's data module is rewritten (step 7
+# of the rebuild). The tests below are kept as the record of the interface it had.
+report_data = pytest.importorskip(
+    "app.lib.data",
+    reason="app/lib/data.py was never committed; the app data module is rewritten in step 7",
+)
 
 REPORTS_BASE_ATTR = getattr(report_data, "REPORTS_BASE", "data/gold/reports")
 

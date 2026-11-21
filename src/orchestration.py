@@ -55,9 +55,8 @@ def _run_dataset_update(
     cfg: DatasetConfig,
     season: int,
     no_validate: bool,
-    since: Optional[str],
 ) -> tuple[int, list[str], dict]:
-    df = importers.fetch_dataset_update(cfg, season=season, since=since)
+    df = importers.fetch_dataset_update(cfg, season=season)
     changed_parts, _partition_stats = promote.write_bronze_and_collect(root, cfg, df)
     part_stats = promote.promote_to_silver(root, cfg, changed_parts, no_validate=no_validate)
     return len(df), changed_parts, part_stats
@@ -118,7 +117,6 @@ def run_update(
     datasets: Optional[str],
     max_workers: int,
     no_validate: bool,
-    since: Optional[str],
 ) -> None:
     run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     with _lock_guard(root):
@@ -129,7 +127,7 @@ def run_update(
             for cfg in selected:
                 try:
                     log_run_event(run_id, "submit", dataset=cfg.name, flow="update", season=season)
-                    futures[pool.submit(_run_dataset_update, root, cfg, season, no_validate, since)] = cfg.name
+                    futures[pool.submit(_run_dataset_update, root, cfg, season, no_validate)] = cfg.name
                 except Exception as exc:
                     logger.error("dataset_submit_failed", dataset=cfg.name, error=str(exc))
             for fut in concurrent.futures.as_completed(futures):
@@ -160,10 +158,6 @@ def run_update(
 
         # Report materialization (current season only)
         try:
-            weekly_dir = Path("data/silver/weekly/season=") / str(season)
-            if not weekly_dir.exists():
-                # Minimal backfill to ensure weekly exists for reports
-                util_reports.backfill_weekly_from_pbp(season=season, season_type="REG")
             util_reports.materialize_player_week_stats(season=season, season_type="REG")
             util_reports.materialize_player_week_utilization_receiving(season=season, season_type="REG")
             util_reports.materialize_player_week_utilization_rushing(season=season, season_type="REG")
@@ -201,7 +195,7 @@ def run_recache_pbp(root: str, catalog: DatasetCatalog, season: int) -> None:
     if not cfg:
         logger.warning("pbp dataset not configured")
         return
-    rows, parts, part_stats = _run_dataset_update(root, cfg, season, no_validate=False, since=None)
+    rows, parts, part_stats = _run_dataset_update(root, cfg, season, no_validate=False)
     lineage = load_lineage()
     lineage = update_dataset_lineage(
         lineage,

@@ -1,0 +1,44 @@
+[project]
+name = "nfl-data"
+version = "0.1.0"
+description = "Local NFL lakehouse: Parquet files queried with DuckDB"
+readme = "README.md"
+# One Python minor, the one the lockfile is tested on. `.python-version` selects it for uv.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # CLI, config, logging
+    "typer>=0.12",
+    "python-dotenv>=1.0",
+    "pydantic>=2.5,<3",
+    "pyyaml>=6.0",
+    "structlog>=24.1",
+    # Storage and query
+    "polars>=1.0,<2",
+    "pyarrow>=15",
+    "duckdb>=1.0,<2",
+    # Streamlit pages under app/
+    "streamlit>=1.37",
+    "altair>=5,<6",
+    # Imported only by the old pipeline under src/. Step 3 of the rebuild removes these.
+    # nfl_data_py is archived upstream. 0.3.3 requires pandas<2.0, which pandera.pandas cannot
+    # run on, so 0.3.2 is the newest release that installs next to the rest of this list.
+    "nfl_data_py==0.3.2",
+    "pandas>=2.1.1,<3",
+    "pandera[pandas]>=0.24",
+    "filelock>=3.13",
+    "orjson>=3.9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.uv]
+# The code is run from the repo root as `python -m src.cli`; it is not an installable package.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Tests import `src.*` and `app.*` from the repo root.
+pythonpath = ["."]
