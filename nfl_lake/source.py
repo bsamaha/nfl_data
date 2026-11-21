@@ -1,11 +1,12 @@
 """Where the files come from.
 
-`GitHubReleases` reads the public nflverse-data releases. `LocalDirSource` reads a folder laid out as
-`<release>/<file>`; the tests use it, and it also works as an offline mirror.
+`GitHubReleasesSource` reads the public nflverse-data releases. `LocalDirSource` reads a folder laid out
+as `<release>/<file>`; the tests use it, and it also works as an offline mirror.
 """
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import shutil
 import time
@@ -14,10 +15,13 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol, TypeVar
+
+from .store import iso
 
 USER_AGENT = "nfl-lake-ingest"
 CHUNK = 1 << 20
+T = TypeVar("T")
 
 
 class SourceError(RuntimeError):
@@ -51,41 +55,55 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-class GitHubReleases:
-    """All releases of one GitHub repository, listed with a single paginated API call."""
+class GitHubReleasesSource:
+    """All releases of one GitHub repository: one API call per 100 releases."""
 
     def __init__(self, repo: str, token: str | None = None, retries: int = 3, backoff: float = 2.0):
-        self.repo, self.token, self.retries, self.backoff = repo, token, retries, backoff
+        self.repo = repo
+        self.token = token
+        self.retries = retries
+        self.backoff = backoff
 
-    def _open(self, req: urllib.request.Request, what: str):
+    def _retry(self, what: str, attempt: Callable[[], T]) -> T:
+        """Run `attempt` up to `retries` times. A server error or a failed connection is retried; a rate limit or other status below 500 is not."""
         last: Exception | None = None
-        for attempt in range(1, self.retries + 1):
+        for n in range(1, self.retries + 1):
             try:
-                return urllib.request.urlopen(req, timeout=120)
-            except urllib.error.HTTPError as e:
-                if e.code in (403, 429) and e.headers.get("X-RateLimit-Remaining") == "0":
-                    reset = e.headers.get("X-RateLimit-Reset")
-                    when = datetime.fromtimestamp(int(reset), timezone.utc).strftime("%H:%M UTC") if reset else "later"
-                    raise SourceError(f"GitHub API rate limit reached while {what}. Retry after {when}, or set GITHUB_TOKEN.") from e
-                if e.code < 500:
-                    raise SourceError(f"HTTP {e.code} while {what}") from e
+                return attempt()
+            except (OSError, http.client.HTTPException) as e:  # includes HTTP 5xx, timeouts and a dropped connection
                 last = e
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-                last = e
-            if attempt < self.retries:
-                time.sleep(self.backoff * attempt)
+                if n < self.retries:
+                    time.sleep(self.backoff * n)
         raise SourceError(f"failed after {self.retries} attempts while {what}: {last}") from last
 
+    def _open(self, req: urllib.request.Request, what: str):
+        """One request. A rate limit or any status below 500 is final, so it becomes a SourceError here."""
+        try:
+            return urllib.request.urlopen(req, timeout=120)
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 429) and e.headers.get("X-RateLimit-Remaining") == "0":
+                reset = e.headers.get("X-RateLimit-Reset")
+                when = datetime.fromtimestamp(int(reset), timezone.utc).strftime("%H:%M UTC") if reset else "later"
+                raise SourceError(f"GitHub API rate limit reached while {what}. Retry after {when}, or set GITHUB_TOKEN.") from e
+            if e.code < 500:
+                raise SourceError(f"HTTP {e.code} while {what}") from e
+            raise
+
     def list_assets(self) -> Listing:
+        headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        what = f"listing {self.repo} releases"
         listing: Listing = {}
         page = 1
         while True:
             url = f"https://api.github.com/repos/{self.repo}/releases?per_page=100&page={page}"
-            headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT}
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
-            with self._open(urllib.request.Request(url, headers=headers), f"listing {self.repo} releases") as r:
-                batch = json.load(r)
+
+            def read_page() -> list[dict]:
+                with self._open(urllib.request.Request(url, headers=headers), what) as r:
+                    return json.load(r)
+
+            batch = self._retry(what, read_page)
             for rel in batch:
                 files = listing.setdefault(rel["tag_name"], {})
                 for a in rel.get("assets", []):
@@ -105,26 +123,23 @@ class GitHubReleases:
     def fetch(self, asset: Asset, dest: Path) -> None:
         # No token here: the download is public and redirects to another host.
         req = urllib.request.Request(asset.url, headers={"User-Agent": USER_AGENT})
-        last: Exception | None = None
-        for attempt in range(1, self.retries + 1):
-            try:
-                with self._open(req, f"downloading {asset.name}") as r, open(dest, "wb") as f:
-                    shutil.copyfileobj(r, f, CHUNK)
-                return
-            except SourceError:
-                raise
-            except (OSError, TimeoutError) as e:  # connection dropped mid-file
-                last = e
-                if attempt < self.retries:
-                    time.sleep(self.backoff * attempt)
-        raise SourceError(f"failed after {self.retries} attempts while downloading {asset.name}: {last}") from last
+        what = f"downloading {asset.name}"
+
+        def download() -> None:
+            with self._open(req, what) as r, open(dest, "wb") as f:
+                shutil.copyfileobj(r, f, CHUNK)
+            got = Path(dest).stat().st_size
+            if got < asset.size:  # http.client returns a body that ended early without raising
+                raise OSError(f"body ended after {got} of {asset.size} bytes")
+
+        self._retry(what, download)
 
 
 class LocalDirSource:
     """A folder of `<release>/<file>` used as the upstream."""
 
     def __init__(self, root: str | Path):
-        self.root = Path(root)
+        self.root = Path(root).resolve()
 
     def list_assets(self) -> Listing:
         if not self.root.is_dir():
@@ -134,7 +149,7 @@ class LocalDirSource:
             files = listing.setdefault(rel.name, {})
             for f in sorted(p for p in rel.iterdir() if p.is_file()):
                 st = f.stat()
-                updated = datetime.fromtimestamp(st.st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                updated = iso(datetime.fromtimestamp(st.st_mtime, timezone.utc))
                 files[f.name] = Asset(rel.name, f.name, st.st_size, updated, sha256_file(f), f.as_uri())
         return listing
 

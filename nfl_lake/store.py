@@ -6,6 +6,8 @@
     <root>/manifest/raw_files.jsonl                                    one line per stored or pruned raw file
     <root>/manifest/runs.jsonl                                         one line per update run
     <root>/manifest/clean_state.json                                   what each clean file was built from
+    <root>/_staging/<run_id>/                                          files being fetched and built; removed when the run ends
+    <root>/.update.lock                                                present while an update runs
 """
 from __future__ import annotations
 
@@ -38,6 +40,7 @@ class Lake:
         self.rejects = self.root / "rejects"
         self.manifest = self.root / "manifest"
         self.staging = self.root / "_staging"
+        self.lock_path = self.root / ".update.lock"
 
     # paths ---------------------------------------------------------------------------------
     def raw_path(self, dataset: str, asset_name: str, updated_at: str, sha256: str) -> Path:
@@ -66,20 +69,23 @@ class Lake:
         path = self.manifest / name
         if not path.exists():
             return []
-        with open(path, encoding="utf-8") as f:
-            return [json.loads(line) for line in f if line.strip()]
+        try:
+            with open(path, encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except ValueError as e:
+            raise ValueError(f"{path} is damaged: {e}") from e
 
     def append_raw_event(self, rec: dict) -> None:
         self._append("raw_files.jsonl", rec)
 
     def raw_versions(self) -> dict[str, list[dict]]:
-        """Raw versions currently on disk per file, oldest first."""
+        """Raw versions the manifest records as stored and not pruned, per file, oldest first."""
         versions: dict[str, list[dict]] = {}
         for e in self._read("raw_files.jsonl"):
-            kept = [v for v in versions.get(e["key"], []) if v["path"] != e["path"]]
+            kept = [v for v in versions.get(e["file_id"], []) if v["path"] != e["path"]]
             if e["event"] == "stored":
                 kept.append(e)
-            versions[e["key"]] = kept
+            versions[e["file_id"]] = kept
         return versions
 
     def append_run(self, rec: dict) -> None:
@@ -90,7 +96,12 @@ class Lake:
 
     def load_state(self) -> dict[str, dict]:
         path = self.manifest / "clean_state.json"
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as e:
+            raise ValueError(f"{path} is damaged: {e}") from e
 
     def save_state(self, state: dict[str, dict]) -> None:
         self.manifest.mkdir(parents=True, exist_ok=True)
@@ -99,9 +110,13 @@ class Lake:
         os.replace(tmp, self.manifest / "clean_state.json")
 
     # lock ----------------------------------------------------------------------------------
-    @property
-    def lock_path(self) -> Path:
-        return self.root / ".update.lock"
+    def _lock_holder(self) -> str:
+        """' (pid N since T)' as written by the update holding the lock, or '' if the file does not say."""
+        try:
+            held = json.loads(self.lock_path.read_text(encoding="utf-8"))
+            return f" (pid {held['pid']} since {held['started']})"
+        except (OSError, ValueError, KeyError, TypeError):
+            return ""
 
     @contextmanager
     def lock(self) -> Iterator[None]:
@@ -110,7 +125,7 @@ class Lake:
             fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             raise LakeLocked(
-                f"{self.lock_path} exists: another update is running, or one was killed. "
+                f"{self.lock_path} exists{self._lock_holder()}: another update is running, or one was killed. "
                 "If none is running, clear it with `python -m nfl_lake unlock`."
             ) from None
         with os.fdopen(fd, "w") as f:

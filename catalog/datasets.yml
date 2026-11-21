@@ -1,6 +1,6 @@
 # Source contracts for the nflverse files this lake ingests.
-# Every key and season range here was checked against the published files; see docs/SOURCE_INVENTORY.md.
-# Unknown settings are rejected when the catalog loads, so nothing in this file is decoration.
+# Keys and season ranges come from docs/SOURCE_INVENTORY.md; ingest enforces each key on every run.
+# Unknown settings are rejected when the catalog loads.
 #
 # Per dataset:
 #   release           nflverse-data release the files live in
@@ -12,18 +12,9 @@
 #   keep_last_by      when a key repeats, keep the row with the highest value of this column
 #   max_row_drop      fail if a rebuilt file loses more than this share of rows (default 0.02)
 #   max_reject_share  fail if more than this share of rows is set aside (default 0.01)
-#   enabled           false skips the dataset
-
-root: data
 
 source:
-  kind: github_releases
   repo: nflverse/nflverse-data
-
-defaults:
-  history: latest
-  max_row_drop: 0.02
-  max_reject_share: 0.01
 
 datasets:
   # One row per game, played or scheduled. Lines for upcoming games change, so every version is kept.
@@ -39,7 +30,7 @@ datasets:
     min_season: 1999
     key: [game_id, play_id]
 
-  # One row per player per game, all positions. Each season has about 22 rows with no player; they are set aside.
+  # One row per player per game, all positions. From 2001 on, one row per week has no player; those rows are set aside.
   stats_player_week:
     release: stats_player
     file: "stats_player_week_{season}.parquet"
@@ -61,8 +52,8 @@ datasets:
     key: [gsis_id]
     history: all
 
-  # Before 2016 every season has hundreds of duplicate rows, so ingest starts there.
-  # A few practice-squad players have no gsis_id; those rows are set aside.
+  # Every season before 2016 has hundreds of duplicate rows or more, so ingest starts in 2016.
+  # A few rows a season have a null or empty gsis_id; they are set aside.
   weekly_rosters:
     release: weekly_rosters
     file: "roster_weekly_{season}.parquet"
@@ -78,8 +69,8 @@ datasets:
     min_season: 2013
     key: [game_id, pfr_player_id]
 
-  # The final weekly report per player. Through 2024 a late status change can leave two rows for one
-  # player-week; the one modified last wins. From 2025 upstream has no timestamp, so every version is kept.
+  # The final weekly report per player. 2024 has two rows that repeat a key; the one modified last wins.
+  # From 2025 upstream has no timestamp, so every version is kept.
   injuries:
     release: injuries
     file: "injuries_{season}.parquet"
