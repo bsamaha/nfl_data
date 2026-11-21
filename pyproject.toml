@@ -4,9 +4,8 @@ version = "0.1.0"
 description = "Local NFL lakehouse: Parquet files queried with DuckDB"
 readme = "README.md"
 # One Python minor, the one the lockfile is tested on. `.python-version` selects it for uv.
-# 3.14 is the newest release every dependency has a Windows wheel for. 3.15 is blocked only
-# by fastparquet, which nfl_data_py pulls in; move up when step 3 removes nfl_data_py.
-requires-python = ">=3.14,<3.15"
+# 3.15 became possible when step 3 removed nfl_data_py, whose fastparquet dependency had no 3.15 wheel.
+requires-python = ">=3.15,<3.16"
 dependencies = [
     # CLI, config, logging
     "typer>=0.12",
@@ -18,17 +17,9 @@ dependencies = [
     "polars>=2.1,<3",
     "pyarrow>=15",
     "duckdb>=2.0,<3",
-    # Streamlit pages under app/
+    # Streamlit pages under app/. They also import pandas, which streamlit brings in.
     "streamlit>=1.37",
     "altair>=6,<7",
-    # Imported only by the old pipeline under src/. Step 3 of the rebuild removes these.
-    # nfl_data_py is archived upstream. 0.3.3 requires pandas<2.0 and numpy<2.0, so 0.3.2 is
-    # the newest release that installs next to the rest of this list.
-    "nfl_data_py==0.3.2",
-    "pandas>=3.1,<4",
-    "pandera[pandas]>=0.24",
-    "filelock>=3.13",
-    "orjson>=3.9",
 ]
 
 [dependency-groups]
@@ -37,10 +28,10 @@ dev = [
 ]
 
 [tool.uv]
-# The code is run from the repo root as `python -m src.cli`; it is not an installable package.
+# The code is run from the repo root as `python -m nfl_lake`; it is not an installable package.
 package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Tests import `src.*` and `app.*` from the repo root.
+# Tests import `nfl_lake.*` and `app.*` from the repo root.
 pythonpath = ["."]

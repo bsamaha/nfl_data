@@ -199,11 +199,11 @@ Seasons compared across the other sources: 2015, 2019 and 2025. In 2019 the same
 
 Old-layout depth charts and weekly rosters before 2016 need a deduplication rule before they can be loaded. Decide whether they are worth it once the first features exist.
 
-## Where the existing catalog disagrees
+## Where the previous catalog disagreed
 
-`catalog/datasets.yml` was written against the retired library. These keys need to change before it can drive ingest or tests.
+`catalog/datasets.yml` was rewritten in step 3 to use the verified keys below, and the ingest now enforces them on every run. The table records what the previous catalog, written against the retired library, had.
 
-| Catalog entry | Catalog key | Verified key |
+| Previous catalog entry | Previous key | Verified key |
 |---|---|---|
 | `weekly` | `season, week, player_id, team` | `player_id, game_id` |
 | `rosters_seasonal` | `season, player_id` | `season, team, gsis_id` |

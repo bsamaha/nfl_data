@@ -6,18 +6,18 @@ They read the public `nflverse/nflverse-data` release files over HTTP. They fetc
 
 ## Requirements
 
-Python with `pyarrow` and `polars`, both already in `requirements.txt`. No DuckDB, no bash, no GitHub token.
+The project environment (`uv sync`), which already has `pyarrow` and `polars`. No DuckDB, no bash, no GitHub token.
 
 ## Run order
 
 Run from the repo root. `data/_inventory` is a good output folder because `data/` is git-ignored.
 
 ```
-python scripts/source_inventory/list_releases.py data/_inventory
-python scripts/source_inventory/probe_schemas.py data/_inventory
-python scripts/source_inventory/analyze_schemas.py data/_inventory
-python scripts/source_inventory/probe_keys_all_seasons.py data/_inventory
-python scripts/source_inventory/probe_values.py data/_inventory
+uv run python scripts/source_inventory/list_releases.py data/_inventory
+uv run python scripts/source_inventory/probe_schemas.py data/_inventory
+uv run python scripts/source_inventory/analyze_schemas.py data/_inventory
+uv run python scripts/source_inventory/probe_keys_all_seasons.py data/_inventory
+uv run python scripts/source_inventory/probe_values.py data/_inventory
 ```
 
 | Script | What it does | Network cost |

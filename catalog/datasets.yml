@@ -1,177 +1,149 @@
-root: "data"
-compression: "zstd"
-row_group_mb: 96
+# Source contracts for the nflverse files this lake ingests.
+# Every key and season range here was checked against the published files; see docs/SOURCE_INVENTORY.md.
+# Unknown settings are rejected when the catalog loads, so nothing in this file is decoration.
+#
+# Per dataset:
+#   release           nflverse-data release the files live in
+#   file              file name; {season} marks one file per season
+#   min_season        first season to ingest (required with {season})
+#   key               columns that identify a row; must be unique and non-null in the clean layer
+#   history           raw versions to keep: latest (default) or all
+#   reject_null_keys  set aside rows whose key is null or empty instead of failing the run
+#   keep_last_by      when a key repeats, keep the row with the highest value of this column
+#   max_row_drop      fail if a rebuilt file loses more than this share of rows (default 0.02)
+#   max_reject_share  fail if more than this share of rows is set aside (default 0.01)
+#   enabled           false skips the dataset
+
+root: data
+
+source:
+  kind: github_releases
+  repo: nflverse/nflverse-data
+
+defaults:
+  history: latest
+  max_row_drop: 0.02
+  max_reject_share: 0.01
 
 datasets:
-  pbp:
-    importer: "pbp"
-    years: "ALL"
-    partitions: ["year"]
-    key: ["game_id", "play_id"]
-    options: { downcast: true, cache: false }
-    enabled: true
-    sort_by: ["year", "game_id", "play_id"]
-    max_rows_per_file: 5000000
-
+  # One row per game, played or scheduled. Lines for upcoming games change, so every version is kept.
   schedules:
-    importer: "schedules"
-    years: "ALL"
-    partitions: ["season"]
-    key: ["game_id"]
-    enabled: true
-    sort_by: ["season", "game_id"]
-    max_rows_per_file: 1000000
+    release: schedules
+    file: games.parquet
+    key: [game_id]
+    history: all
 
-  weekly:
-    importer: "weekly"
-    years: "ALL"
-    partitions: ["season"]
-    key: ["season","week","player_id","team"]
-    enabled: true
-    sort_by: ["season","week","player_id","team"]
-    max_rows_per_file: 2000000
+  pbp:
+    release: pbp
+    file: "play_by_play_{season}.parquet"
+    min_season: 1999
+    key: [game_id, play_id]
 
-  rosters:
-    importer: "rosters"
-    years: "ALL"
-    partitions: ["season"]
-    key: ["season","week","player_id","team"]
-    enabled: true
-    sort_by: ["season","week","player_id","team"]
-    max_rows_per_file: 1000000
+  # One row per player per game, all positions. Each season has about 22 rows with no player; they are set aside.
+  stats_player_week:
+    release: stats_player
+    file: "stats_player_week_{season}.parquet"
+    min_season: 1999
+    key: [player_id, game_id]
+    reject_null_keys: true
 
-  rosters_seasonal:
-    importer: "seasonal_rosters"
-    years: "ALL"
-    partitions: ["season"]
-    key: ["season","player_id"]
-    enabled: true
-    sort_by: ["season","player_id"]
-    max_rows_per_file: 1000000
-
-  injuries:
-    importer: "injuries"
-    years: "ALL"
-    partitions: ["season"]
-    key: ["season","week","team","player_id"]
-    enabled: true
-    sort_by: ["season","week","team","player_id"]
-    max_rows_per_file: 1000000
-
-  depth_charts:
-    importer: "depth_charts"
-    years: "ALL"
-    partitions: ["season"]
-    key: ["season","week","team","position","player_id"]
-    enabled: true
-    sort_by: ["season","week","team","position","player_id"]
-    max_rows_per_file: 1000000
-
-  snap_counts:
-    importer: "snap_counts"
-    years: "ALL"
-    partitions: ["season"]
-    key: ["season","week","team","player_id"]
-    enabled: true
-    sort_by: ["season","week","team","player_id"]
-    max_rows_per_file: 1000000
-
-  officials:
-    importer: "officials"
-    years: "ALL"
-    partitions: ["season"]
-    key: ["game_id","official_id"]
-    enabled: false
-    sort_by: ["season","game_id","official_id"]
-    max_rows_per_file: 500000
-
-  win_totals:
-    importer: "win_totals"
-    years: "ALL"
-    partitions: ["season"]
-    key: ["season","team"]
-    enabled: false
-    sort_by: ["season","team"]
-    max_rows_per_file: 200000
-
-  scoring_lines:
-    importer: "scoring_lines"
-    years: "ALL"
-    partitions: ["season"]
-    key: ["season","game_id"]
-    enabled: false
-    sort_by: ["season","game_id"]
-    max_rows_per_file: 200000
-
-  draft_picks:
-    importer: "draft_picks"
-    years: "ALL"
-    partitions: ["season"]
-    key: ["season","overall","team"]
-    enabled: false
-    sort_by: ["season","overall"]
-    max_rows_per_file: 200000
-
-  combine:
-    importer: "combine"
-    years: "ALL"
-    partitions: ["season"]
-    key: ["season","player_id"]
-    enabled: false
-    sort_by: ["season","player_id"]
-    max_rows_per_file: 200000
-
-
-  dk_bestball:
-    importer: "dk_bestball"
-    years: "ALL"
-    partitions: ["section"]
-    key: ["section","id"]
-    enabled: true
-    sort_by: ["section","id"]
-    max_rows_per_file: 10000
-
-  ngs_weekly:
-    importer: "ngs_weekly"
-    years: "ALL"
-    partitions: ["season","stat_type"]
-    key: ["season","week","player_id","stat_type"]
-    enabled: true
-    sort_by: ["season","week","player_id","stat_type"]
-    max_rows_per_file: 1000000
-
-  pfr_weekly:
-    importer: "pfr_weekly"
-    years: "ALL"
-    partitions: ["season","stat_type"]
-    key: ["season","week","player_id","stat_type"]
-    enabled: false
-    sort_by: ["season","week","player_id","stat_type"]
-    max_rows_per_file: 1000000
-
-  pfr_seasonal:
-    importer: "pfr_seasonal"
-    years: "ALL"
-    partitions: ["season","stat_type"]
-    key: ["season","player_id","stat_type"]
-    enabled: false
-    sort_by: ["season","player_id","stat_type"]
-    max_rows_per_file: 1000000
-
-  ids:
-    importer: "ids"
-    years: "ALL"
-    partitions: []
-    key: ["gsis_id","pfr_id"]
-    enabled: true
-    sort_by: []
-    max_rows_per_file: 200000
+  # One row per team per game. 1999 has one row with no team.
+  stats_team_week:
+    release: stats_team
+    file: "stats_team_week_{season}.parquet"
+    min_season: 1999
+    key: [team, game_id]
+    reject_null_keys: true
 
   players:
-    importer: "players"
-    years: "ALL"
-    partitions: []
-    key: ["gsis_id"]
-    enabled: true
-    sort_by: []
-    max_rows_per_file: 100000
+    release: players
+    file: players.parquet
+    key: [gsis_id]
+    history: all
+
+  # Before 2016 every season has hundreds of duplicate rows, so ingest starts there.
+  # A few practice-squad players have no gsis_id; those rows are set aside.
+  weekly_rosters:
+    release: weekly_rosters
+    file: "roster_weekly_{season}.parquet"
+    min_season: 2016
+    key: [season, week, game_type, team, gsis_id]
+    reject_null_keys: true
+    history: all
+
+  # The 2012 file is empty upstream. Players carry a PFR id only.
+  snap_counts:
+    release: snap_counts
+    file: "snap_counts_{season}.parquet"
+    min_season: 2013
+    key: [game_id, pfr_player_id]
+
+  # The final weekly report per player. Through 2024 a late status change can leave two rows for one
+  # player-week; the one modified last wins. From 2025 upstream has no timestamp, so every version is kept.
+  injuries:
+    release: injuries
+    file: "injuries_{season}.parquet"
+    min_season: 2009
+    key: [season, game_type, week, team, gsis_id]
+    keep_last_by: date_modified
+    history: all
+
+  # Timestamped snapshots, 2025 on. The file itself holds every snapshot, so one raw version is enough.
+  # The week-based files for 2001-2024 have no unique key and are not ingested.
+  depth_charts:
+    release: depth_charts
+    file: "depth_charts_{season}.parquet"
+    min_season: 2025
+    key: [dt, team, pos_id, pos_rank]
+
+  ngs_passing:
+    release: nextgen_stats
+    file: ngs_passing.parquet
+    key: [season, season_type, week, player_gsis_id]
+
+  ngs_rushing:
+    release: nextgen_stats
+    file: ngs_rushing.parquet
+    key: [season, season_type, week, player_gsis_id]
+
+  ngs_receiving:
+    release: nextgen_stats
+    file: ngs_receiving.parquet
+    key: [season, season_type, week, player_gsis_id]
+
+  # Published only after the postseason, so the season in progress has no file.
+  pbp_participation:
+    release: pbp_participation
+    file: "pbp_participation_{season}.parquet"
+    min_season: 2016
+    key: [nflverse_game_id, play_id]
+
+  ftn_charting:
+    release: ftn_charting
+    file: "ftn_charting_{season}.parquet"
+    min_season: 2022
+    key: [nflverse_game_id, nflverse_play_id]
+
+  pfr_week_pass:
+    release: pfr_advstats
+    file: "advstats_week_pass_{season}.parquet"
+    min_season: 2018
+    key: [game_id, pfr_player_id]
+
+  pfr_week_rush:
+    release: pfr_advstats
+    file: "advstats_week_rush_{season}.parquet"
+    min_season: 2018
+    key: [game_id, pfr_player_id]
+
+  pfr_week_rec:
+    release: pfr_advstats
+    file: "advstats_week_rec_{season}.parquet"
+    min_season: 2018
+    key: [game_id, pfr_player_id]
+
+  pfr_week_def:
+    release: pfr_advstats
+    file: "advstats_week_def_{season}.parquet"
+    min_season: 2018
+    key: [game_id, pfr_player_id]

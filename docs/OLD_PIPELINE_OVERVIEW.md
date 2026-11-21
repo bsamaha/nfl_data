@@ -1,3 +1,5 @@
+> This describes the previous pipeline, which was removed when ingest was rebuilt (step 3). It is kept for reference only; see the README for how the lake works now.
+
 # Local NFL Data Lake — Technical Overview
 
 ## Purpose
