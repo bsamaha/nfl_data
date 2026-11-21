@@ -1,4 +1,4 @@
-"""Summarise schemas.json: seasons, rows, column counts and the seasons where the column set or types change.
+"""Summarize schemas.json: seasons, rows, column counts and the seasons where the column set or types change.
 
 Local only; reads OUT_DIR/schemas.json written by probe_schemas.py.
 
@@ -9,6 +9,8 @@ from pathlib import Path
 
 res = json.loads((Path(sys.argv[1]) / "schemas.json").read_text())
 only = set(sys.argv[2].split(",")) if len(sys.argv) > 2 else None
+if only and only - set(res):
+    sys.exit(f"unknown label: {', '.join(sorted(only - set(res)))}. Labels in schemas.json: {', '.join(res)}")
 
 
 def short(xs, n=14):
@@ -25,6 +27,13 @@ for label, recs in res.items():
         stem = re.sub(r"_?(19|20)\d\d", "", r["file"]).replace(".parquet", "")
         groups.setdefault(stem, []).append(r)
     for stem, rs in groups.items():
+        # probe_schemas.py writes a record with "error" in place of rows and columns when a footer read fails
+        failed = sorted(r["file"] for r in rs if "error" in r)
+        failed_seasons = {r["season"] for r in rs if "error" in r}
+        rs = [r for r in rs if "error" not in r]
+        if not rs:
+            print(f"\n## {label} :: {stem}  no file was read; failed: {', '.join(failed)}")
+            continue
         rs.sort(key=lambda r: (r["season"] or 0))
         seasons = [r["season"] for r in rs if r["season"]]
         rows = [r["rows"] for r in rs]
@@ -32,8 +41,10 @@ for label, recs in res.items():
               + (f" seasons={seasons[0]}-{seasons[-1]}" if seasons else "")
               + f" rows(min/max/last)={min(rows)}/{max(rows)}/{rows[-1]} cols(first/last)={len(rs[0]['columns'])}/{len(rs[-1]['columns'])}"
               + f" last_update={max(r['updated_at'] for r in rs)[:16]}")
+        if failed:
+            print("   FAILED to read, left out of this summary:", ", ".join(failed))
         if seasons:
-            missing = sorted(set(range(seasons[0], seasons[-1] + 1)) - set(seasons))
+            missing = sorted(set(range(seasons[0], seasons[-1] + 1)) - set(seasons) - failed_seasons)
             if missing:
                 print("   MISSING seasons:", missing)
         prev = None
@@ -50,9 +61,6 @@ for label, recs in res.items():
                           + (f" | type {len(typ)}: {short(typ, 8)}" if typ else ""))
             prev = cols
         last = rs[-1]
-        if len(sys.argv) > 3 or len(last["columns"]) <= 60:
-            print("   latest columns:", ", ".join(f"{n}:{t}" for n, t in last["columns"]))
-        else:
-            print("   latest columns (names):", short([n for n, _ in last["columns"]], 400))
+        print("   latest columns:", ", ".join(f"{n}:{t}" for n, t in last["columns"]))
         if last.get("kv"):
             print("   file metadata keys:", list(last["kv"].items())[:4])

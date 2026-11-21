@@ -1,6 +1,7 @@
-"""Read nflverse parquet files remotely without saving them: footers for schema, range reads for a few columns."""
+"""Read nflverse Parquet files over HTTP without saving them: footers for schema, range reads for columns."""
 import io, json, re, urllib.request
 from pathlib import Path
+import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -15,7 +16,10 @@ def load_listing(out_dir):
 
 def assets(listing, tag, regex):
     rx = re.compile(regex)
-    return sorted((a for a in listing[tag]["assets"] if rx.fullmatch(a["name"])), key=lambda a: a["name"])
+    found = sorted((a for a in listing.get(tag, {}).get("assets", []) if rx.fullmatch(a["name"])), key=lambda a: a["name"])
+    if not found:
+        print(f"NO FILES: release {tag} has no file matching {regex}")
+    return found
 
 
 def season_of(name):
@@ -35,6 +39,10 @@ def _get(url, start, end):
         return data, r.geturl()
 
 
+def print_fetched():
+    print(f"\nbytes fetched: {FETCHED / 1e6:.1f} MB")
+
+
 def read_footer(url, size):
     """Return pyarrow FileMetaData using only the file's tail (64 KB first, then the exact footer if it is larger)."""
     n = min(size, 65_536)
@@ -44,7 +52,7 @@ def read_footer(url, size):
     flen = int.from_bytes(tail[-8:-4], "little")
     if flen + 8 > len(tail):
         tail, _ = _get(url, size - flen - 8, size - 1)
-    return pq.read_metadata(pa.BufferReader(b"PAR1" + tail[-(flen + 8):]))
+    return pq.read_metadata(pa.BufferReader(tail))
 
 
 class RangeFile(io.RawIOBase):
@@ -52,7 +60,7 @@ class RangeFile(io.RawIOBase):
     BLOCK = 1 << 20
 
     def __init__(self, url, size):
-        self.url, self.size, self.pos, self.cache, self.fetched = url, size, 0, {}, 0
+        self.url, self.size, self.pos, self.cache = url, size, 0, {}
 
     def readable(self): return True
     def seekable(self): return True
@@ -68,7 +76,6 @@ class RangeFile(io.RawIOBase):
             data, final = _get(self.url, s, min(s + self.BLOCK, self.size) - 1)
             self.url = final  # reuse the resolved location
             self.cache[i] = data
-            self.fetched += len(data)
         return self.cache[i]
 
     def read(self, n=-1):
@@ -86,18 +93,20 @@ class RangeFile(io.RawIOBase):
         self.pos = pos
         return bytes(out)
 
-    def readinto(self, b):
-        data = self.read(len(b))
-        b[:len(data)] = data
-        return len(data)
-
 
 def read_columns(asset, columns=None):
     """Read selected columns of one remote parquet asset into a polars DataFrame (in memory only)."""
-    import polars as pl
     f = RangeFile(asset["url"], asset["size"])
     pf = pq.ParquetFile(f)
     have = set(pf.schema_arrow.names)
     cols = [c for c in columns if c in have] if columns else None
     tbl = pf.read(columns=cols)
-    return pl.from_arrow(tbl), f.fetched
+    return pl.from_arrow(tbl)
+
+
+def count_key_problems(df, key):
+    """Return (rows with a null or empty-string key column, rows repeating a key among the remaining rows)."""
+    k = df.select(key)
+    k = k.with_columns(pl.when(pl.col(c) == "").then(None).otherwise(pl.col(c)).alias(c) for c in key if k[c].dtype == pl.String)
+    kept = k.drop_nulls()
+    return k.height - kept.height, kept.height - kept.unique().height
