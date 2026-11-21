@@ -25,7 +25,7 @@ uv sync
 uv run pytest
 ```
 
-`uv sync` creates `.venv` from `uv.lock`, and downloads Python 3.12 first if you do not have it (the version is set in `.python-version`). The expected test result is 26 passed and 1 skipped. The skipped module is `tests/test_defense_report.py`, which needs the missing `app/lib/data.py`.
+`uv sync` creates `.venv` from `uv.lock`, and downloads Python 3.14 first if you do not have it (the version is set in `.python-version`). The expected test result is 26 passed and 1 skipped. The skipped module is `tests/test_defense_report.py`, which needs the missing `app/lib/data.py`.
 
 To add or upgrade a dependency, edit `pyproject.toml` and run `uv lock`, then commit both files.
 
