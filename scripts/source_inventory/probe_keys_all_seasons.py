@@ -9,7 +9,7 @@ Usage: python probe_keys_all_seasons.py OUT_DIR
 """
 import sys, concurrent.futures as cf
 import polars as pl
-from nfl_remote import load_listing, assets, season_of, read_columns, count_key_problems, print_fetched
+from nfl_remote import NO_FILES, load_listing, assets, season_of, read_columns, count_key_problems, print_fetched
 
 L = load_listing(sys.argv[1])
 GAMES = read_columns(next(a for a in L["schedules"]["assets"] if a["name"] == "games.parquet"))
@@ -105,5 +105,5 @@ print("   POST week range, by season where it changes:", changes((s, (lo, hi)) f
 home = GAMES.group_by("season").agg(pl.col("home_team").unique().alias("t")).sort("season")
 print("   relocation codes, by season where they change:", changes((s, sorted(set(t) & RELOCATED)) for s, t in home.rows()))
 print_fetched()
-if any("error" in r for recs in res.values() for r in recs):
+if NO_FILES or any("error" in r for recs in res.values() for r in recs):
     sys.exit(1)

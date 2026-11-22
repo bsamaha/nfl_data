@@ -35,21 +35,31 @@ def main(catalog: str = typer.Option("catalog/datasets.yml", help="Path to the d
     )
 
 
+def _lake() -> Lake:
+    """The lake folder: NFL_LAKE_ROOT, or `data` under the working directory."""
+    return Lake(os.getenv("NFL_LAKE_ROOT") or "data")
+
+
 def _setup() -> tuple[Catalog, Lake, Source]:
-    """Catalog, lake and source. NFL_LAKE_ROOT moves the lake; NFL_LAKE_SOURCE_DIR reads a local mirror instead of GitHub."""
+    """Catalog, lake and source. NFL_LAKE_SOURCE_DIR reads a local mirror instead of GitHub."""
     catalog = load_catalog(_opts["catalog"])
-    lake = Lake(os.getenv("NFL_LAKE_ROOT") or "data")
     mirror = os.getenv("NFL_LAKE_SOURCE_DIR")
     source: Source
     if mirror:
         source = LocalDirSource(mirror)
     else:
         source = GitHubReleasesSource(catalog.source.repo, token=os.getenv("GITHUB_TOKEN") or None)
-    return catalog, lake, source
+    return catalog, _lake(), source
 
 
 def _names(value: str | None) -> list[str] | None:
-    return [v.strip() for v in value.split(",") if v.strip()] if value else None
+    """Dataset names from a comma-separated option. An option given with no name in it is refused, not read as 'all'."""
+    if value is None:
+        return None
+    names = [v.strip() for v in value.split(",") if v.strip()]
+    if not names:
+        raise typer.BadParameter("give at least one dataset name, or leave the option out")
+    return names
 
 
 def _seasons(value: str | None) -> set[int] | None:
@@ -110,8 +120,9 @@ def update(
         catalog, lake, source = _setup()
         chosen = _names(datasets)
         selected = catalog.select(chosen)  # an unknown name stops here, before upstream is listed or a run recorded
-        if skip:
-            left_out = {d.name for d in catalog.select(_names(skip))}
+        left_out = _names(skip)
+        if left_out is not None:
+            catalog.select(left_out)  # an unknown name is an error here too
             chosen = [d.name for d in selected if d.name not in left_out]
             if not chosen:
                 raise ValueError("--skip leaves no dataset to update")
@@ -145,6 +156,8 @@ def status() -> None:
         typer.echo(f"{'dataset':<20}{'files':>6}  {'seasons':<10}{'rows':>11}{'set aside':>10}  {'upstream updated':<21}built")
         for r in rows:
             typer.echo(f"{r['dataset']:<20}{r['files']:>6}  {r['seasons']:<10}{r['rows']:>11,}{r['rejected']:>10,}  {r['upstream']:<21}{r['built']}")
+        if any(r["seasons"].endswith("*") for r in rows):
+            typer.echo("* not every season in the range is published")
         if last is None:
             typer.echo("no runs recorded yet")
         else:
@@ -171,7 +184,7 @@ def verify(
 def unlock() -> None:
     """Clear the lock left behind by an update that was killed. Only use it when no update is running."""
     with _reporting():
-        _, lake, _ = _setup()
+        lake = _lake()  # the catalog is not read, so a broken one cannot keep a lock in place
         if lake.lock_path.exists():
             lake.lock_path.unlink()
             typer.echo(f"removed {lake.lock_path}")

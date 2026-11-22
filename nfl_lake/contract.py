@@ -37,11 +37,19 @@ def _null_key(key: list[str]) -> pl.Expr:
     return pl.any_horizontal([pl.col(k).is_null() for k in key])
 
 
+def _blank_keys_to_null(df: pl.DataFrame, key: list[str]) -> pl.DataFrame:
+    """An empty string in an id column is a missing id."""
+    text_keys = [k for k in key if df.schema[k] == pl.String]
+    if not text_keys:
+        return df
+    return df.with_columns([pl.when(pl.col(k) == "").then(None).otherwise(pl.col(k)).alias(k) for k in text_keys])
+
+
 def check_key(df: pl.DataFrame, key: list[str]) -> tuple[int, int]:
-    """(rows with a null key column, rows whose key repeats) for a frame holding the key columns."""
-    nulls = df.filter(_null_key(key)).height
-    dups = df.height - df.select(key).unique().height
-    return nulls, dups
+    """(rows with a null or empty key column, rows that repeat a key among the rest), as build_clean counts them."""
+    keys = _blank_keys_to_null(df.select(key), key)
+    keyed = keys.filter(~_null_key(key))
+    return keys.height - keyed.height, keyed.height - keyed.unique().height
 
 
 def build_clean(df: pl.DataFrame, ds: Dataset, previous: dict | None, accept_schema_change: bool) -> Built:
@@ -53,11 +61,7 @@ def build_clean(df: pl.DataFrame, ds: Dataset, previous: dict | None, accept_sch
     if missing:
         raise ContractError(f"key column(s) missing from the file: {', '.join(missing)}")
 
-    # An empty string in an id column is a missing id.
-    text_keys = [k for k in key if df.schema[k] == pl.String]
-    if text_keys:
-        df = df.with_columns([pl.when(pl.col(k) == "").then(None).otherwise(pl.col(k)).alias(k) for k in text_keys])
-
+    df = _blank_keys_to_null(df, key)
     rejects = df.filter(_null_key(key))
     if rejects.height:
         if not ds.spec.reject_null_keys:

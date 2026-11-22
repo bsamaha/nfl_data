@@ -33,6 +33,7 @@ Costs were measured on 21 Nov 2026. A full run transfers about 205 MB and takes 
 - In `probe_keys_all_seasons.py`, a dataset is healthy when `null-key rows`, `dup rows` and `game ids not in schedules` all say `none` and its section has no `ERROR` line. `null-key rows` counts rows with a null or empty-string key column, and `dup rows` counts the rows that repeat a key among the other rows. Known exceptions are listed per dataset in `docs/SOURCE_INVENTORY.md`.
 - `schedule games absent here` is expected for the season in progress (unplayed games); the other known cases are listed per dataset in `docs/SOURCE_INVENTORY.md`.
 - In `analyze_schemas.py`, a line starting with a season means the layout changed in that season. No such lines means every season has the same columns.
+- A probe exits non-zero when a file could not be read (`ERROR`), or when a release or file pattern it expects matched nothing (`NO FILES`).
 
 ## Limits
 

@@ -163,6 +163,10 @@ def test_bad_arguments_are_refused(cli, upstream, lake):
         result = cli("update", "--seasons", seasons)
         assert result.exit_code == 2, result.output
 
+    for args in (("update", "--datasets", ","), ("update", "--skip", " "), ("verify", "--datasets", ",")):
+        result = cli(*args)  # an option with no name in it does not mean every dataset
+        assert result.exit_code == 2, result.output
+
     result = cli("update", "--datasets", "nope")
     assert result.exit_code == 1, result.output
     assert "ERROR not in the catalog: nope" in result.output
@@ -224,13 +228,32 @@ def test_verify_exits_non_zero_on_damage(cli, upstream, lake):
     lambda catalog: catalog.write_text("datasets: [unclosed"),  # not YAML
     lambda catalog: catalog.write_text(catalog.read_text() + "root: elsewhere\n"),  # an unknown setting
 ])
-def test_unreadable_catalog_is_reported_by_every_command(make_cli, tmp_path, damage):
+def test_unreadable_catalog_is_reported_by_every_command_that_reads_it(make_cli, tmp_path, lake, damage):
     cli = make_cli(stats=STATS)
     damage(tmp_path / "datasets.yml")
-    for command in ("update", "status", "verify", "unlock"):
+    for command in ("update", "status", "verify"):
         result = cli(command)
         assert result.exit_code == 1, (command, result.output)
         assert "ERROR" in result.output
+
+    lake.lock_path.parent.mkdir()
+    lake.lock_path.write_text("{}")
+    result = cli("unlock")  # reads no catalog, so a broken one cannot keep a stale lock in place
+    assert result.exit_code == 0, result.output
+    assert not lake.lock_path.exists()
+
+
+def test_status_marks_a_season_range_that_has_gaps(cli, upstream):
+    for season in (2022, 2023, 2024):
+        upstream.put("stats_player", f"stats_player_week_{season}.parquet", stats_frame())
+    result = cli("update", "--seasons", "2022,2024")
+    assert result.exit_code == 0, result.output
+    result = cli("status")
+    assert "2022-2024*" in result.output and "* not every season in the range is published" in result.output
+
+    result = cli("update")
+    assert result.exit_code == 0, result.output
+    assert "*" not in cli("status").output
 
 
 def test_unlock_clears_a_stale_lock(cli, upstream, lake):

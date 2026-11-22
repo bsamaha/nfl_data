@@ -31,6 +31,8 @@ from .source import Asset, Listing, Source, SourceError, sha256_file
 from .store import Lake, iso, utc_now
 
 log = structlog.get_logger("nfl_lake")
+# What polars raises for a Parquet file it cannot read. PanicException is not an Exception subclass.
+UNREADABLE = (pl.exceptions.PolarsError, pl.exceptions.PanicException, OSError)
 
 
 class UpdateFailed(Exception):
@@ -140,8 +142,8 @@ def _needs_build(t: Target, versions: dict[str, list[dict]], state: dict, lake: 
 
 
 def _fetch_one(source: Source, lake: Lake, t: Target, staging: Path, run_id: str) -> dict:
+    """Runs in a worker thread. The folders it shares with other workers already exist; see _execute."""
     tmp = staging / "raw" / t.dataset.name / t.asset.name
-    tmp.parent.mkdir(parents=True, exist_ok=True)
     source.fetch(t.asset, tmp)
     size = tmp.stat().st_size
     if size != t.asset.size:
@@ -155,7 +157,7 @@ def _fetch_one(source: Source, lake: Lake, t: Target, staging: Path, run_id: str
         raise SourceError(f"not a readable Parquet file ({e})") from e
     kv = {k.decode(): v.decode(errors="replace") for k, v in (meta.metadata or {}).items()}
     dest = lake.raw_path(t.dataset.name, t.asset.name, t.asset.updated_at, sha)
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.parent.mkdir(exist_ok=True)  # this file's own folder; no other worker creates it
     os.replace(tmp, dest)
     return {
         "event": "stored", "file_id": t.file_id, "dataset": t.dataset.name, "release": t.asset.release,
@@ -168,7 +170,12 @@ def _fetch_one(source: Source, lake: Lake, t: Target, staging: Path, run_id: str
 
 def _build_one(lake: Lake, t: Target, raw: dict, previous: dict | None, staging: Path,
                accept_schema_change: bool) -> Staged:
-    built = build_clean(pl.read_parquet(lake.root / raw["path"]), t.dataset, previous, accept_schema_change)
+    try:
+        frame = pl.read_parquet(lake.root / raw["path"])
+    except UNREADABLE as e:
+        raise ContractError(f"raw file {raw['path']} cannot be read ({type(e).__name__}); "
+                            "delete it and run update to fetch it again") from e
+    built = build_clean(frame, t.dataset, previous, accept_schema_change)
     clean = staging / "clean" / t.dataset.name / t.asset.name
     clean.parent.mkdir(parents=True, exist_ok=True)
     built.frame.write_parquet(clean, compression="zstd")
@@ -210,6 +217,10 @@ def _execute(catalog: Catalog, source: Source, lake: Lake, summary: Summary, sta
 
     # 1. fetch
     log.info("fetching", files=len(to_fetch), megabytes=round(sum(t.asset.size for t in to_fetch) / 1e6, 1))
+    # The folders that workers share are made here: threads creating one folder at the same moment can fail on Windows.
+    for name in {t.dataset.name for t in to_fetch}:
+        (staging / "raw" / name).mkdir(parents=True, exist_ok=True)
+        (lake.raw / name).mkdir(parents=True, exist_ok=True)
     with cf.ThreadPoolExecutor(workers) as pool:
         futures = {pool.submit(_fetch_one, source, lake, t, staging, summary.run_id): t for t in to_fetch}
         for fut in cf.as_completed(futures):
@@ -337,7 +348,7 @@ def verify(catalog: Catalog, lake: Lake, datasets: list[str] | None = None, deep
     for file_id, st in sorted(state.items()):
         ds = wanted.get(st["dataset"])
         if ds is None:
-            if not datasets:
+            if datasets is None:
                 errors.append(f"{file_id}: published, but dataset {st['dataset']} is not in the catalog; restore the "
                               "entry, or delete the dataset's folders under clean/, rejects/ and raw/ and its entries "
                               "in manifest/clean_state.json")
@@ -351,7 +362,7 @@ def verify(catalog: Catalog, lake: Lake, datasets: list[str] | None = None, deep
         else:
             try:
                 df = pl.read_parquet(path, columns=ds.key)
-            except (pl.exceptions.PolarsError, pl.exceptions.PanicException, OSError) as e:
+            except UNREADABLE as e:
                 errors.append(f"{file_id}: clean file cannot be read ({type(e).__name__})")
             else:
                 if df.height != st["rows"]:
@@ -369,15 +380,21 @@ def verify(catalog: Catalog, lake: Lake, datasets: list[str] | None = None, deep
 
 
 def status(catalog: Catalog, lake: Lake) -> tuple[list[dict], dict | None]:
-    """Per-dataset totals of what is published, and the last run record."""
+    """Per-dataset totals of what is published, and the last run record.
+
+    `seasons` is first-last, with a trailing * when a season inside that range is not published.
+    """
     state = lake.load_state()
     rows = []
     for ds in catalog.select():
         items = [s for s in state.values() if s["dataset"] == ds.name]
         seasons = sorted(s["season"] for s in items if s["season"] is not None)
+        span = f"{seasons[0]}-{seasons[-1]}" if seasons else "-"
+        if seasons and len(seasons) <= seasons[-1] - seasons[0]:
+            span += "*"
         rows.append({
             "dataset": ds.name, "files": len(items),
-            "seasons": f"{seasons[0]}-{seasons[-1]}" if seasons else "-",
+            "seasons": span,
             "rows": sum(s["rows"] for s in items), "rejected": sum(s["rejected_rows"] for s in items),
             "upstream": max((s["upstream_updated_at"] for s in items), default="-"),
             "built": max((s["built_at"] for s in items), default="-"),

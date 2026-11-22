@@ -1,6 +1,7 @@
 """run_update, verify and status against a fake upstream folder: what a run guarantees."""
 import dataclasses
 import os
+import threading
 from pathlib import Path
 
 import polars as pl
@@ -8,6 +9,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from conftest import GAMES, GAMES_FILE_ID, STATS, STATS_FILE, STATS_FILE_ID, catalog_of, stats_frame
+from nfl_lake.contract import check_key
 from nfl_lake.pipeline import UpdateFailed, run_update, status, verify
 from nfl_lake.source import LocalDirSource, sha256_file
 from nfl_lake.store import LakeLocked
@@ -425,6 +427,45 @@ def test_changing_a_dataset_rule_rebuilds_without_fetching(upstream, lake):
         assert s.fetched == [] and s.built == [STATS_FILE_ID]
 
 
+def test_check_key_counts_rows_the_way_a_build_does():
+    keys = pl.DataFrame({"player_id": [None, None, "", "a", "a", "b"], "game_id": ["g1"] * 6})
+    assert check_key(keys, ["player_id", "game_id"]) == (3, 1)  # null and empty ids are not also counted as repeats
+
+
+def test_download_workers_share_no_folder_creation(upstream, lake, monkeypatch):
+    made_by_workers = []
+    real_mkdir = Path.mkdir
+
+    def mkdir(self, *args, **kwargs):
+        if threading.current_thread() is not threading.main_thread():
+            made_by_workers.append(self)
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    for season in (2022, 2023, 2024, 2025):
+        upstream.put("stats_player", f"stats_player_week_{season}.parquet", stats_frame())
+    run_update(catalog_of(stats=STATS), upstream.source, lake)
+
+    # Threads creating one folder at the same moment can fail on Windows, so each worker makes only its file's own folder.
+    assert len(made_by_workers) == len(set(made_by_workers)) == 4
+
+
+def test_unreadable_raw_file_is_named_when_a_rebuild_needs_it(upstream, lake):
+    upstream.put("stats_player", STATS_FILE, stats_frame())
+    run_update(catalog_of(stats=STATS), upstream.source, lake)
+    (lake.root / lake.raw_versions()[STATS_FILE_ID][0]["path"]).write_bytes(b"not parquet")
+
+    with pytest.raises(UpdateFailed, match=f"{STATS_FILE_ID}: raw file .* cannot be read"):
+        run_update(catalog_of(stats={**STATS, "reject_null_keys": True}), upstream.source, lake)  # a rule change rebuilds
+
+
+def test_lake_written_before_the_file_id_rename_says_so(upstream, lake):
+    upstream.put("stats_player", STATS_FILE, stats_frame())
+    lake.append_raw_event({"event": "stored", "key": STATS_FILE_ID, "path": "raw/stats/old.parquet"})
+    with pytest.raises(UpdateFailed, match="written when the field was called `key`"):
+        run_update(catalog_of(stats=STATS), upstream.source, lake)
+
+
 def test_verify_notices_damage_to_published_files(upstream, lake):
     cat = catalog_of(stats=STATS)
     upstream.put("stats_player", STATS_FILE, stats_frame())
@@ -435,6 +476,9 @@ def test_verify_notices_damage_to_published_files(upstream, lake):
     pl.concat([stats_frame(), stats_frame()]).write_parquet(path)
     _, problems = verify(cat, lake)
     assert any("4 rows but 2 were published" in p for p in problems) and any("repeating a key" in p for p in problems)
+
+    stats_frame().with_columns(pl.Series("player_id", ["00-002", ""])).write_parquet(path)  # an empty id is a missing id
+    assert verify(cat, lake)[1] == [f"{STATS_FILE_ID}: 1 row(s) with a null key, 0 row(s) repeating a key"]
 
     path.write_bytes(b"not parquet")
     assert any("clean file cannot be read" in p for p in verify(cat, lake)[1])

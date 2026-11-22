@@ -59,6 +59,19 @@ def test_read_columns_reads_a_subset_or_the_whole_file(monkeypatch):
     assert nfl_remote.read_columns(asset, ["a", "renamed"]).columns == ["a"]
 
 
+def test_assets_records_a_release_or_pattern_that_matches_nothing(monkeypatch):
+    monkeypatch.setattr(nfl_remote, "NO_FILES", [])
+    listing = {"pbp": {"assets": [{"name": "play_by_play_2025.parquet"}, {"name": "play_by_play_2024.parquet"}, {"name": "notes.csv"}]}}
+
+    found = nfl_remote.assets(listing, "pbp", r"play_by_play_\d{4}\.parquet")
+    assert [a["name"] for a in found] == ["play_by_play_2024.parquet", "play_by_play_2025.parquet"]
+    assert nfl_remote.NO_FILES == []
+
+    assert nfl_remote.assets(listing, "renamed", r".*") == []
+    assert nfl_remote.assets(listing, "pbp", r"pbp_\d{4}\.parquet") == []
+    assert nfl_remote.NO_FILES == ["renamed: .*", r"pbp: pbp_\d{4}\.parquet"]  # the probes exit non-zero on these
+
+
 def test_count_key_problems_sets_null_and_empty_keys_aside_before_counting_repeats():
     df = pl.DataFrame({
         "game_id": ["g1", "g1", "g1", "g1", "g2", "g2"],

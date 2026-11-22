@@ -1,5 +1,5 @@
 """Read nflverse Parquet files over HTTP without saving them: footers for schema, range reads for columns."""
-import io, json, re, urllib.request
+import io, json, re, threading, urllib.request
 from pathlib import Path
 import polars as pl
 import pyarrow as pa
@@ -14,10 +14,14 @@ def load_listing(out_dir):
     return {r["tag"]: r for r in rels}
 
 
+NO_FILES = []  # "release: pattern" for each assets() call that matched nothing; a script that sees any exits non-zero
+
+
 def assets(listing, tag, regex):
     rx = re.compile(regex)
     found = sorted((a for a in listing.get(tag, {}).get("assets", []) if rx.fullmatch(a["name"])), key=lambda a: a["name"])
     if not found:
+        NO_FILES.append(f"{tag}: {regex}")
         print(f"NO FILES: release {tag} has no file matching {regex}")
     return found
 
@@ -28,6 +32,7 @@ def season_of(name):
 
 
 FETCHED = 0  # total bytes downloaded by this process, across all helpers
+_FETCHED_LOCK = threading.Lock()  # the probes download from several threads
 
 
 def _get(url, start, end):
@@ -35,7 +40,8 @@ def _get(url, start, end):
     req = urllib.request.Request(url, headers={**UA, "Range": f"bytes={start}-{end}"})
     with urllib.request.urlopen(req, timeout=90) as r:
         data = r.read()
-        FETCHED += len(data)
+        with _FETCHED_LOCK:
+            FETCHED += len(data)
         return data, r.geturl()
 
 

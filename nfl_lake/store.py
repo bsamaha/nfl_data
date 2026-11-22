@@ -82,6 +82,10 @@ class Lake:
         """Raw versions the manifest records as stored and not pruned, per file, oldest first."""
         versions: dict[str, list[dict]] = {}
         for e in self._read("raw_files.jsonl"):
+            if "file_id" not in e:
+                raise ValueError(f"{self.manifest / 'raw_files.jsonl'} has entries without `file_id`: this lake was "
+                                 "written when the field was called `key`. Rename the field in that file, or delete "
+                                 "the lake and run update again.")
             kept = [v for v in versions.get(e["file_id"], []) if v["path"] != e["path"]]
             if e["event"] == "stored":
                 kept.append(e)
@@ -106,7 +110,10 @@ class Lake:
     def save_state(self, state: dict[str, dict]) -> None:
         self.manifest.mkdir(parents=True, exist_ok=True)
         tmp = self.manifest / "clean_state.json.tmp"
-        tmp.write_text(json.dumps(state, indent=1, sort_keys=True), encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(state, indent=1, sort_keys=True))
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, self.manifest / "clean_state.json")
 
     # lock ----------------------------------------------------------------------------------
@@ -128,9 +135,9 @@ class Lake:
                 f"{self.lock_path} exists{self._lock_holder()}: another update is running, or one was killed. "
                 "If none is running, clear it with `python -m nfl_lake unlock`."
             ) from None
-        with os.fdopen(fd, "w") as f:
-            f.write(json.dumps({"pid": os.getpid(), "started": iso(utc_now())}))
         try:
+            with os.fdopen(fd, "w") as f:
+                f.write(json.dumps({"pid": os.getpid(), "started": iso(utc_now())}))
             yield
         finally:
             self.lock_path.unlink(missing_ok=True)

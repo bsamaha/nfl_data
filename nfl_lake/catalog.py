@@ -39,6 +39,8 @@ class DatasetSpec(_Strict):
     @model_validator(mode="after")
     def _consistent(self) -> DatasetSpec:
         seasonal = SEASON in self.file
+        if self.file.count(SEASON) > 1:
+            raise ValueError("a file pattern can contain {season} only once")
         if seasonal and self.min_season is None:
             raise ValueError("a file pattern containing {season} needs min_season")
         if not seasonal and self.min_season is not None:
@@ -98,12 +100,13 @@ class Catalog(_Strict):
         return Dataset(name=name, spec=self.datasets[name])
 
     def select(self, names: list[str] | None = None) -> list[Dataset]:
-        """Datasets in catalog order, optionally limited to `names`. An unknown name is an error."""
-        if names:
-            unknown = [n for n in names if n not in self.datasets]
-            if unknown:
-                raise ValueError(f"not in the catalog: {', '.join(unknown)}")
-        return [self.dataset(n) for n in self.datasets if not names or n in names]
+        """Datasets in catalog order: all of them for None, otherwise those in `names`. An unknown name is an error."""
+        if names is None:
+            return [self.dataset(n) for n in self.datasets]
+        unknown = [n for n in names if n not in self.datasets]
+        if unknown:
+            raise ValueError(f"not in the catalog: {', '.join(unknown)}")
+        return [self.dataset(n) for n in self.datasets if n in names]
 
 
 def load_catalog(path: str | Path) -> Catalog:

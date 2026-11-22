@@ -7,7 +7,7 @@ Usage: python probe_schemas.py OUT_DIR
 """
 import json, sys, concurrent.futures as cf
 from pathlib import Path
-from nfl_remote import load_listing, assets, season_of, read_footer, print_fetched
+from nfl_remote import NO_FILES, load_listing, assets, season_of, read_footer, print_fetched
 
 out = Path(sys.argv[1])
 L = load_listing(out)
@@ -71,5 +71,5 @@ print("ok:", sum(len(v) for v in res.values()) - len(errs), "errors:", len(errs)
 print_fetched()
 for e in errs:
     print("  ", e)
-if errs:
+if errs or NO_FILES:
     sys.exit(1)

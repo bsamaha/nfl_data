@@ -45,9 +45,15 @@ def test_file_matching_is_exact():
     assert d.match("old_stats_player_week_2024.parquet") == (False, None)
 
 
+def test_file_pattern_takes_the_season_once():
+    with pytest.raises(ValidationError, match="only once"):
+        catalog_of(stats={**STATS, "file": "stats_{season}_{season}.parquet"})
+
+
 def test_selecting_an_unknown_dataset_is_an_error():
     cat = catalog_of(stats=STATS)
     assert [d.name for d in cat.select()] == ["stats"]
+    assert cat.select([]) == []  # an empty list is no dataset, not every dataset
     with pytest.raises(ValueError, match="not in the catalog: nope"):
         cat.select(["nope"])
 
