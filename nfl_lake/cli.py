@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import NoReturn
 
-import typer
 import yaml
-from dotenv import load_dotenv
 
 from .catalog import Catalog, load_catalog
 from .pipeline import UpdateFailed, get_lake_status, run_update, verify_lake
 from .source import GitHubReleasesSource, LocalDirSource, SourceError, UpstreamSource
 from .store import LakeLocked, LakeStore
-
-app = typer.Typer(no_args_is_help=True, add_completion=False, help="Ingest nflverse files into the local lake.")
 
 
 class _CurrentStderrHandler(logging.StreamHandler):
@@ -34,13 +32,24 @@ class _CurrentStderrHandler(logging.StreamHandler):
         pass  # StreamHandler.__init__ assigns one; there is nothing to keep
 
 
-@app.callback()
-def configure_cli(
-    ctx: typer.Context,
-    catalog: str = typer.Option("catalog/datasets.yml", help="Path to the dataset catalog."),
-) -> None:
-    ctx.obj = catalog
-    load_dotenv()
+def _load_dotenv(env_path: Path = Path(".env")) -> None:
+    """Load key=value pairs from `.env` if present, without overwriting existing environment variables."""
+    if not env_path.is_file():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.removeprefix("export ").strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if key:
+            os.environ.setdefault(key, value)
+
+
+def _configure_logging() -> None:
     log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
     handler = _CurrentStderrHandler()
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%SZ")
@@ -65,19 +74,15 @@ def _open_source(catalog: Catalog) -> UpstreamSource:
     return GitHubReleasesSource(catalog.source.repo, token=os.getenv("GITHUB_TOKEN") or None)
 
 
-def _parse_dataset_names(raw_value: str | None) -> list[str] | None:
+def _parse_dataset_names(raw_value: str) -> list[str]:
     """Dataset names from a comma-separated option. An option given with no name in it is refused, not read as 'all'."""
-    if raw_value is None:
-        return None
     dataset_names = [item.strip() for item in raw_value.split(",") if item.strip()]
     if not dataset_names:
-        raise typer.BadParameter("give at least one dataset name, or leave the option out")
+        raise argparse.ArgumentTypeError("give at least one dataset name, or leave the option out")
     return dataset_names
 
 
-def _parse_season_filter(raw_value: str | None) -> set[int] | None:
-    if not raw_value:
-        return None
+def _parse_season_filter(raw_value: str) -> set[int]:
     seasons: set[int] = set()
     try:
         for token in raw_value.split(","):
@@ -91,14 +96,24 @@ def _parse_season_filter(raw_value: str | None) -> set[int] | None:
         if not seasons:
             raise ValueError
     except ValueError:
-        raise typer.BadParameter("use a season, a range or a list: 2026, 2015-2026 or 2024,2026") from None
+        raise argparse.ArgumentTypeError("use a season, a range or a list: 2026, 2015-2026 or 2024,2026") from None
     return seasons
+
+
+def _parse_workers(raw_value: str) -> int:
+    try:
+        workers = int(raw_value)
+        if not 1 <= workers <= 16:
+            raise ValueError
+    except ValueError:
+        raise argparse.ArgumentTypeError("workers must be an integer between 1 and 16") from None
+    return workers
 
 
 def _exit_with_errors(error_lines: list[str]) -> NoReturn:
     for error_line in error_lines:
-        typer.echo(f"ERROR {error_line}", err=True)
-    raise typer.Exit(1)
+        print(f"ERROR {error_line}", file=sys.stderr)
+    raise SystemExit(1)
 
 
 @contextmanager
@@ -118,136 +133,171 @@ def _handle_cli_errors() -> Iterator[None]:
         _exit_with_errors([str(error)])
 
 
-@app.command()
-def update(
-    ctx: typer.Context,
-    datasets: str | None = typer.Option(None, help="Comma-separated dataset names. Default: every dataset."),
-    skip: str | None = typer.Option(
-        None, help="Comma-separated dataset names to leave out, e.g. one that is broken upstream."
-    ),
-    seasons: str | None = typer.Option(None, help="Seasons to consider: 2026, 2015-2026 or 2024,2026. Default: all."),
-    accept_schema_change: bool = typer.Option(
-        False, "--accept-schema-change", help="Publish files whose columns were removed or changed type."
-    ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Show what would be fetched and rebuilt, and change nothing."
-    ),
-    workers: int = typer.Option(4, min=1, max=16, help="Parallel downloads."),
-) -> None:
-    """Fetch every file that changed upstream, rebuild the clean layer from it, and publish only if every file passed.
+def _cmd_update(args: argparse.Namespace) -> None:
+    catalog = load_catalog(args.catalog)
+    lake = _open_lake()
+    source = _open_source(catalog)
+    selected_datasets = catalog.select_datasets(args.datasets, exclude_names=args.skip)
+    if args.skip is not None and not selected_datasets:
+        raise ValueError("--skip leaves no dataset to update")
+    selected_dataset_names = (
+        None if args.datasets is None and args.skip is None else [dataset.name for dataset in selected_datasets]
+    )
+    summary = run_update(
+        catalog,
+        source,
+        lake,
+        dataset_names=selected_dataset_names,
+        season_filter=args.seasons,
+        accept_schema_change=args.accept_schema_change,
+        dry_run=args.dry_run,
+        workers=args.workers,
+    )
+    fetched_megabytes = summary.bytes_fetched / 1e6
+    if summary.dry_run:
+        print(
+            f"dry run: {summary.target_file_count} files in {summary.dataset_count} datasets; "
+            f"would fetch {len(summary.fetched_file_ids)} ({fetched_megabytes:.1f} MB) "
+            f"and rebuild {len(summary.rebuilt_file_ids)}"
+        )
+        for file_id in summary.fetched_file_ids:
+            print(f"  fetch {file_id}")
+        return
+    print(f"{summary.run_id}: ok")
+    print(
+        f"  {summary.target_file_count} files in {summary.dataset_count} datasets: "
+        f"fetched {len(summary.fetched_file_ids)} ({fetched_megabytes:.1f} MB), "
+        f"rebuilt {len(summary.rebuilt_file_ids)}, unchanged {summary.unchanged_file_count}"
+    )
+    if summary.rejected_rows_by_file:
+        print(
+            f"  rows set aside for a null key: {sum(summary.rejected_rows_by_file.values())} "
+            f"in {len(summary.rejected_rows_by_file)} file(s), see {lake.rejects_dir}"
+        )
+    if summary.deduped_rows_by_file:
+        print(
+            f"  repeated keys resolved: {sum(summary.deduped_rows_by_file.values())} row(s) "
+            f"in {len(summary.deduped_rows_by_file)} file(s)"
+        )
+    for note in summary.notes:
+        print(f"  note: {note}")
 
-    The first run downloads everything. Later runs download only files whose upstream checksum changed.
-    """
+
+def _cmd_status(args: argparse.Namespace) -> None:
+    catalog = load_catalog(args.catalog)
+    lake = _open_lake()
+    lake_status = get_lake_status(catalog, lake)
+    print(f"lake: {lake.root_dir.resolve()}")
+    print(f"{'dataset':<20}{'files':>6}  {'seasons':<10}{'rows':>11}{'set aside':>10}  {'upstream updated':<21}built")
+    for dataset_status in lake_status.datasets:
+        print(
+            f"{dataset_status.dataset_name:<20}{dataset_status.file_count:>6}  "
+            f"{dataset_status.season_span:<10}{dataset_status.row_count:>11,}"
+            f"{dataset_status.rejected_row_count:>10,}  "
+            f"{dataset_status.latest_upstream_updated_at:<21}{dataset_status.latest_built_at}"
+        )
+    if any(dataset_status.season_span.endswith("*") for dataset_status in lake_status.datasets):
+        print("* not every season in the range is published")
+    last_run = lake_status.last_run
+    if last_run is None:
+        print("no runs recorded yet")
+    else:
+        print(
+            f"last run {last_run['run_id']}: {last_run['status']} at {last_run['finished_at']}, "
+            f"fetched {last_run['fetched']}, rebuilt {last_run['built']}"
+        )
+        for error_message in last_run["errors"]:
+            print(f"  ERROR {error_message}")
+
+
+def _cmd_verify(args: argparse.Namespace) -> None:
+    catalog = load_catalog(args.catalog)
+    lake = _open_lake()
+    verification = verify_lake(catalog, lake, args.datasets, args.deep)
+    if verification.errors:
+        _exit_with_errors(verification.errors)
+    print(f"verified {verification.checked_file_count} file(s): ok")
+
+
+def _cmd_unlock(args: argparse.Namespace) -> None:
+    del args  # the catalog is not read, so a broken one cannot keep a lock in place
+    lake = _open_lake()
+    if lake.lock_path.exists():
+        lake.lock_path.unlink()
+        print(f"removed {lake.lock_path}")
+    else:
+        print("no lock to remove")
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m nfl_lake",
+        description="Ingest nflverse files into the local lake.",
+    )
+    parser.add_argument("--catalog", default="catalog/datasets.yml", help="Path to the dataset catalog.")
+    subparsers = parser.add_subparsers(dest="command")
+
+    update_parser = subparsers.add_parser(
+        "update",
+        help="Fetch what changed upstream, rebuild the clean layer, and publish only if every file passed.",
+    )
+    update_parser.add_argument(
+        "--datasets", type=_parse_dataset_names, help="Comma-separated dataset names. Default: every dataset."
+    )
+    update_parser.add_argument(
+        "--skip",
+        type=_parse_dataset_names,
+        help="Comma-separated dataset names to leave out, e.g. one that is broken upstream.",
+    )
+    update_parser.add_argument(
+        "--seasons",
+        type=_parse_season_filter,
+        help="Seasons to consider: 2026, 2015-2026 or 2024,2026. Default: all.",
+    )
+    update_parser.add_argument(
+        "--accept-schema-change",
+        action="store_true",
+        help="Publish files whose columns were removed or changed type.",
+    )
+    update_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be fetched and rebuilt, and change nothing.",
+    )
+    update_parser.add_argument("--workers", type=_parse_workers, default=4, help="Parallel downloads (1-16).")
+    update_parser.set_defaults(handler=_cmd_update)
+
+    status_parser = subparsers.add_parser(
+        "status", help="Show what is published per dataset, and how the last run ended."
+    )
+    status_parser.set_defaults(handler=_cmd_status)
+
+    verify_parser = subparsers.add_parser(
+        "verify", help="Re-check every published file: present, expected row count, key unique and non-null."
+    )
+    verify_parser.add_argument(
+        "--datasets", type=_parse_dataset_names, help="Comma-separated dataset names. Default: every dataset."
+    )
+    verify_parser.add_argument(
+        "--deep", action="store_true", help="Also re-hash every clean file and retained raw snapshot."
+    )
+    verify_parser.set_defaults(handler=_cmd_verify)
+
+    unlock_parser = subparsers.add_parser(
+        "unlock", help="Clear the lock left behind by an update that was killed. Only use when no update is running."
+    )
+    unlock_parser.set_defaults(handler=_cmd_unlock)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.command is None:
+        parser.print_help()
+        return
+    _load_dotenv()
+    _configure_logging()
     with _handle_cli_errors():
-        catalog = load_catalog(ctx.obj)
-        lake = _open_lake()
-        source = _open_source(catalog)
-        selected_datasets = catalog.select_datasets(
-            _parse_dataset_names(datasets),
-            exclude_names=_parse_dataset_names(skip),
-        )
-        if skip is not None and not selected_datasets:
-            raise ValueError("--skip leaves no dataset to update")
-        selected_dataset_names = (
-            None if datasets is None and skip is None else [dataset.name for dataset in selected_datasets]
-        )
-        summary = run_update(
-            catalog,
-            source,
-            lake,
-            dataset_names=selected_dataset_names,
-            season_filter=_parse_season_filter(seasons),
-            accept_schema_change=accept_schema_change,
-            dry_run=dry_run,
-            workers=workers,
-        )
-        fetched_megabytes = summary.bytes_fetched / 1e6
-        if summary.dry_run:
-            typer.echo(
-                f"dry run: {summary.target_file_count} files in {summary.dataset_count} datasets; "
-                f"would fetch {len(summary.fetched_file_ids)} ({fetched_megabytes:.1f} MB) "
-                f"and rebuild {len(summary.rebuilt_file_ids)}"
-            )
-            for file_id in summary.fetched_file_ids:
-                typer.echo(f"  fetch {file_id}")
-            return
-        typer.echo(f"{summary.run_id}: ok")
-        typer.echo(
-            f"  {summary.target_file_count} files in {summary.dataset_count} datasets: "
-            f"fetched {len(summary.fetched_file_ids)} ({fetched_megabytes:.1f} MB), "
-            f"rebuilt {len(summary.rebuilt_file_ids)}, unchanged {summary.unchanged_file_count}"
-        )
-        if summary.rejected_rows_by_file:
-            typer.echo(
-                f"  rows set aside for a null key: {sum(summary.rejected_rows_by_file.values())} "
-                f"in {len(summary.rejected_rows_by_file)} file(s), see {lake.rejects_dir}"
-            )
-        if summary.deduped_rows_by_file:
-            typer.echo(
-                f"  repeated keys resolved: {sum(summary.deduped_rows_by_file.values())} row(s) "
-                f"in {len(summary.deduped_rows_by_file)} file(s)"
-            )
-        if summary.pruned_raw_count:
-            typer.echo(f"  old raw versions removed: {summary.pruned_raw_count}")
-        for note in summary.notes:
-            typer.echo(f"  note: {note}")
-
-
-@app.command()
-def status(ctx: typer.Context) -> None:
-    """Show what is published per dataset, and how the last run ended."""
-    with _handle_cli_errors():
-        catalog = load_catalog(ctx.obj)
-        lake = _open_lake()
-        lake_status = get_lake_status(catalog, lake)
-        typer.echo(f"lake: {lake.root_dir.resolve()}")
-        typer.echo(
-            f"{'dataset':<20}{'files':>6}  {'seasons':<10}{'rows':>11}{'set aside':>10}  {'upstream updated':<21}built"
-        )
-        for dataset_status in lake_status.datasets:
-            typer.echo(
-                f"{dataset_status.dataset_name:<20}{dataset_status.file_count:>6}  "
-                f"{dataset_status.season_span:<10}{dataset_status.row_count:>11,}"
-                f"{dataset_status.rejected_row_count:>10,}  "
-                f"{dataset_status.latest_upstream_updated_at:<21}{dataset_status.latest_built_at}"
-            )
-        if any(dataset_status.season_span.endswith("*") for dataset_status in lake_status.datasets):
-            typer.echo("* not every season in the range is published")
-        last_run = lake_status.last_run
-        if last_run is None:
-            typer.echo("no runs recorded yet")
-        else:
-            typer.echo(
-                f"last run {last_run['run_id']}: {last_run['status']} at {last_run['finished_at']}, "
-                f"fetched {last_run['fetched']}, rebuilt {last_run['built']}"
-            )
-            for error_message in last_run["errors"]:
-                typer.echo(f"  ERROR {error_message}")
-
-
-@app.command()
-def verify(
-    ctx: typer.Context,
-    datasets: str | None = typer.Option(None, help="Comma-separated dataset names. Default: every dataset."),
-    deep: bool = typer.Option(False, "--deep", help="Also re-hash each raw file against the manifest."),
-) -> None:
-    """Re-check every published file: present, expected row count, key unique and non-null."""
-    with _handle_cli_errors():
-        catalog = load_catalog(ctx.obj)
-        lake = _open_lake()
-        verification = verify_lake(catalog, lake, _parse_dataset_names(datasets), deep)
-        if verification.errors:
-            _exit_with_errors(verification.errors)
-        typer.echo(f"verified {verification.checked_file_count} file(s): ok")
-
-
-@app.command()
-def unlock() -> None:
-    """Clear the lock left behind by an update that was killed. Only use it when no update is running."""
-    with _handle_cli_errors():
-        lake = _open_lake()  # the catalog is not read, so a broken one cannot keep a lock in place
-        if lake.lock_path.exists():
-            lake.lock_path.unlink()
-            typer.echo(f"removed {lake.lock_path}")
-        else:
-            typer.echo("no lock to remove")
+        args.handler(args)

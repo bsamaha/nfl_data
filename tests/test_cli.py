@@ -1,26 +1,36 @@
 """The command line: exit codes and what ends up on disk. A scheduled job acts on the exit code."""
 
+import io
+from dataclasses import dataclass
+
 import polars as pl
 import pytest
 import yaml
 from conftest import (
     GAMES_DATASET_SPEC,
     STATS_DATASET_SPEC,
-    STATS_FILE_ID,
     STATS_FILENAME,
     build_catalog,
     make_stats_frame,
 )
-from typer.testing import CliRunner
 
-from nfl_lake.cli import app
+from nfl_lake.cli import main
 from nfl_lake.pipeline import run_update
 
-cli_runner = CliRunner()
+
+@dataclass(frozen=True)
+class CliResult:
+    exit_code: int
+    stdout: str
+    stderr: str
+
+    @property
+    def output(self) -> str:
+        return self.stdout + self.stderr
 
 
 @pytest.fixture
-def make_cli(tmp_path, upstream, lake, monkeypatch):
+def make_cli(tmp_path, upstream, lake, monkeypatch, capsys):
     """Build a CLI caller for a catalog of the given datasets, pointed at the test lake and upstream."""
 
     def create_caller(**datasets):
@@ -28,7 +38,18 @@ def make_cli(tmp_path, upstream, lake, monkeypatch):
         catalog_path.write_text(yaml.safe_dump(build_catalog(**datasets).model_dump(mode="json")))
         monkeypatch.setenv("NFL_LAKE_ROOT", str(lake.root_dir))
         monkeypatch.setenv("NFL_LAKE_SOURCE_DIR", str(upstream.root_dir))
-        return lambda *args: cli_runner.invoke(app, ["--catalog", str(catalog_path), *args])
+
+        def invoke(*args: str) -> CliResult:
+            capsys.readouterr()
+            exit_code = 0
+            try:
+                main(["--catalog", str(catalog_path), *args])
+            except SystemExit as exit_signal:
+                exit_code = exit_signal.code if isinstance(exit_signal.code, int) else 1
+            captured = capsys.readouterr()
+            return CliResult(exit_code=exit_code, stdout=captured.out, stderr=captured.err)
+
+        return invoke
 
     return create_caller
 
@@ -38,13 +59,12 @@ def cli(make_cli):
     return make_cli(stats=STATS_DATASET_SPEC)
 
 
-def command_succeeded(result) -> bool:
+def command_succeeded(result: CliResult) -> bool:
     return result.exit_code == 0
 
 
-def command_refused(result, exit_code: int = 1) -> bool:
-    """The command stopped itself with this exit code. A crash also ends with code 1, but not through SystemExit."""
-    return result.exit_code == exit_code and isinstance(result.exception, SystemExit)
+def command_refused(result: CliResult, exit_code: int = 1) -> bool:
+    return result.exit_code == exit_code
 
 
 def test_update_publishes_where_the_readme_says_and_a_dry_run_writes_nothing(cli, upstream, lake):
@@ -58,11 +78,14 @@ def test_update_publishes_where_the_readme_says_and_a_dry_run_writes_nothing(cli
     assert [run["fetched"] for run in lake.load_run_records()] == [1, 0]
 
 
-def test_progress_still_reaches_stderr_after_a_command_has_finished(cli, upstream, lake, capsys):
+def test_progress_still_reaches_stderr_after_a_command_has_finished(cli, upstream, lake, monkeypatch, capsys):
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
-    assert command_succeeded(
-        cli("update", "--dry-run")
-    )  # sets logging up while stderr is the runner's, which then closes
+    # Configure logging while sys.stderr is a temporary stream that closes right after the command.
+    temporary_stderr = io.StringIO()
+    with monkeypatch.context() as patch:
+        patch.setattr("sys.stderr", temporary_stderr)
+        assert command_succeeded(cli("update", "--dry-run"))
+    temporary_stderr.close()
 
     run_update(build_catalog(stats=STATS_DATASET_SPEC), upstream.source, lake)  # logs its progress
 
@@ -88,9 +111,10 @@ def test_bad_arguments_are_refused(cli, upstream, lake):
         ("update", "--seasons", ","),
         ("update", "--datasets", ","),
         ("update", "--skip", " "),
+        ("update", "--workers", "0"),
         ("verify", "--datasets", ","),
     ]
-    for args in invalid_invocations:  # not a season, a reversed range, and empty options: none means "everything"
+    for args in invalid_invocations:  # not a season, a reversed range, out-of-range workers, and empty options
         result = cli(*args)
         assert command_refused(result, exit_code=2), (args, result.output)
 
@@ -128,9 +152,7 @@ def test_datasets_and_skip_options_limit_the_run(make_cli, upstream, lake):
     assert published_datasets() == ["stats"]
 
     upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1"]}))  # games is fixed
-    upstream.put(
-        "stats_player", STATS_FILENAME, pl.concat([make_stats_frame(), make_stats_frame()])
-    )  # and stats breaks
+    upstream.put("stats_player", STATS_FILENAME, pl.concat([make_stats_frame(), make_stats_frame()]))  # stats breaks
     result = cli("update", "--datasets", "games")
     assert command_succeeded(result), result.output
     assert published_datasets() == ["games", "stats"]
@@ -150,10 +172,12 @@ def test_schema_change_needs_the_accept_option(cli, upstream, lake):
 def test_verify_exits_1_on_damage(cli, upstream, lake):
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
     assert command_succeeded(cli("update"))
-    raw_file_path = lake.root_dir / lake.load_raw_versions()[STATS_FILE_ID][0]["path"]
-    raw_file_path.write_bytes(b"tampered")
+    # Tamper with a non-key column: key and row count stay valid, so only --deep catches the checksum change.
+    make_stats_frame(targets=99).sort("player_id", "game_id").write_parquet(
+        lake.clean_file_path("stats", STATS_FILENAME)
+    )
 
-    result = cli("verify")  # the clean file is intact; only --deep reads the raw one
+    result = cli("verify")
     assert command_succeeded(result), result.output
     assert command_refused(cli("verify", "--deep"))
     assert command_refused(cli("verify", "--datasets", "nope"))

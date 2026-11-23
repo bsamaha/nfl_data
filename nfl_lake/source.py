@@ -79,11 +79,8 @@ class UpstreamSource(Protocol):
 
 
 def compute_file_sha256(file_path: Path) -> str:
-    hasher = hashlib.sha256()
     with open(file_path, "rb") as file_handle:
-        while chunk := file_handle.read(DOWNLOAD_CHUNK_BYTES):
-            hasher.update(chunk)
-    return hasher.hexdigest()
+        return hashlib.file_digest(file_handle, "sha256").hexdigest()
 
 
 class GitHubReleasesSource:
@@ -116,23 +113,22 @@ class GitHubReleasesSource:
 
     def _open_request(self, request: urllib.request.Request, operation: str):
         """Perform one HTTP request. A rate limit or any status below 500 is final, so it becomes a SourceError here."""
-        try:
-            return urllib.request.urlopen(request, timeout=120)
-        except urllib.error.HTTPError as http_error:
-            if http_error.code in (403, 429) and http_error.headers.get("X-RateLimit-Remaining") == "0":
-                reset_epoch = http_error.headers.get("X-RateLimit-Reset")
-                reset_time_utc = (
-                    datetime.fromtimestamp(int(reset_epoch), UTC).strftime("%H:%M UTC") if reset_epoch else "later"
-                )
-                raise SourceError(
-                    f"GitHub API rate limit reached while {operation}. "
-                    f"Retry after {reset_time_utc}, or set GITHUB_TOKEN."
-                ) from http_error
-            if http_error.code < 500:
-                raise SourceError(f"HTTP {http_error.code} while {operation}") from http_error
-            raise _Transient(str(http_error)) from http_error
-        except (OSError, http.client.HTTPException) as error:
-            raise _Transient(str(error) or type(error).__name__) from error
+        with _network():
+            try:
+                return urllib.request.urlopen(request, timeout=120)
+            except urllib.error.HTTPError as http_error:
+                if http_error.code in (403, 429) and http_error.headers.get("X-RateLimit-Remaining") == "0":
+                    reset_epoch = http_error.headers.get("X-RateLimit-Reset")
+                    reset_time_utc = (
+                        datetime.fromtimestamp(int(reset_epoch), UTC).strftime("%H:%M UTC") if reset_epoch else "later"
+                    )
+                    raise SourceError(
+                        f"GitHub API rate limit reached while {operation}. "
+                        f"Retry after {reset_time_utc}, or set GITHUB_TOKEN."
+                    ) from http_error
+                if http_error.code < 500:
+                    raise SourceError(f"HTTP {http_error.code} while {operation}") from http_error
+                raise  # 5xx propagates into _network(), which converts it to _Transient
 
     def list_assets(self) -> UpstreamListing:
         headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT}

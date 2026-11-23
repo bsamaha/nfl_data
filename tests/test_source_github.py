@@ -12,10 +12,9 @@ from email.message import Message
 
 import pytest
 import yaml
-from typer.testing import CliRunner
 
 from nfl_lake import source as source_module
-from nfl_lake.cli import app
+from nfl_lake.cli import main
 from nfl_lake.source import GitHubReleasesSource, SourceError, UpstreamAsset
 
 SAMPLE_UPDATED_AT = "2026-11-21T16:46:06Z"
@@ -206,9 +205,8 @@ def test_cli_lists_the_catalog_repo_on_github_with_the_token_when_no_source_fold
         lambda attempt_number, request: io.BytesIO(json.dumps([make_release_payload("pbp", "a.parquet")]).encode()),
     )
 
-    result = CliRunner().invoke(app, ["--catalog", str(catalog_path), "update", "--dry-run"])
+    main(["--catalog", str(catalog_path), "update", "--dry-run"])
 
-    assert result.exit_code == 0, result.output
     (request,) = requests
     assert "/repos/example/repo/releases" in request.full_url and request.get_header("Authorization") == "Bearer t0ken"
 

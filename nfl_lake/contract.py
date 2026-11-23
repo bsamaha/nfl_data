@@ -58,13 +58,18 @@ def _normalize_blank_key_strings(frame: pl.DataFrame, key_columns: Sequence[str]
     )
 
 
+def _count_duplicate_keys(non_null_key_frame: pl.DataFrame) -> int:
+    """Count rows repeating a key in a frame whose key columns already have no nulls or blanks."""
+    return non_null_key_frame.height - non_null_key_frame.n_unique()
+
+
 def count_key_violations(frame: pl.DataFrame, key_columns: Sequence[str]) -> KeyViolationCounts:
     """Count rows with a null/blank key column, and rows repeating a key among the remaining rows."""
     key_frame = _normalize_blank_key_strings(frame.select(key_columns), key_columns)
     non_null_key_frame = key_frame.filter(~_any_key_is_null_expr(key_columns))
     return KeyViolationCounts(
         null_key_rows=key_frame.height - non_null_key_frame.height,
-        duplicate_key_rows=non_null_key_frame.height - non_null_key_frame.unique().height,
+        duplicate_key_rows=_count_duplicate_keys(non_null_key_frame),
     )
 
 
@@ -101,19 +106,19 @@ def _enforce_key_rules(raw_frame: pl.DataFrame, dataset: Dataset) -> tuple[pl.Da
             subset=key_columns, keep="last", maintain_order=True
         )
         deduped_row_count = row_count_before_dedup - clean_frame.height
-
-    duplicate_key_rows = count_key_violations(clean_frame, key_columns).duplicate_key_rows
-    if duplicate_key_rows:
-        sample_duplicate_keys = (
-            clean_frame.filter(pl.struct(key_columns).is_duplicated()).select(key_columns).unique().head(3).rows()
-        )
-        unused_rule = ""
-        if order_column and order_column not in clean_frame.columns:
-            unused_rule = f". keep_last_by names {order_column!r}, which this file does not have"
-        raise ContractError(
-            f"{duplicate_key_rows} row(s) repeat a key ({', '.join(key_columns)}), "
-            f"e.g. {sample_duplicate_keys}{unused_rule}"
-        )
+    else:
+        duplicate_key_rows = _count_duplicate_keys(clean_frame.select(key_columns))
+        if duplicate_key_rows:
+            sample_duplicate_keys = (
+                clean_frame.filter(pl.struct(key_columns).is_duplicated()).select(key_columns).unique().head(3).rows()
+            )
+            unused_rule = (
+                f". keep_last_by names {order_column!r}, which this file does not have" if order_column else ""
+            )
+            raise ContractError(
+                f"{duplicate_key_rows} row(s) repeat a key ({', '.join(key_columns)}), "
+                f"e.g. {sample_duplicate_keys}{unused_rule}"
+            )
 
     if clean_frame.height == 0:
         raise ContractError("no rows left to publish")

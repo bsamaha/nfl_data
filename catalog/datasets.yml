@@ -7,7 +7,7 @@
 #   file              file name; {season} marks one file per season
 #   min_season        first season to ingest (required with {season})
 #   key               columns that identify a row; must be unique and non-null in the clean layer
-#   history           raw versions to keep: latest (default) or all
+#   history           latest (default, clean file only) or all (also keep every raw snapshot)
 #   reject_null_keys  set aside rows whose key is null or empty instead of failing the run
 #   keep_last_by      when a key repeats, keep the row with the highest value of this column
 #   max_row_drop      fail if a rebuilt file loses more than this share of rows (default 0.02)

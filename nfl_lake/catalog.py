@@ -30,7 +30,7 @@ class DatasetSpec(_StrictModel):
 
     release: str
     file: str
-    key: list[str] = Field(min_length=1)
+    key: tuple[str, ...] = Field(min_length=1)
     min_season: int | None = None
     history: Literal["latest", "all"] = "latest"
     reject_null_keys: bool = False
@@ -59,7 +59,7 @@ class Dataset(DatasetSpec):
 
     @property
     def key_columns(self) -> tuple[str, ...]:
-        return tuple(self.key)
+        return self.key
 
     @property
     def is_seasonal(self) -> bool:
@@ -78,7 +78,7 @@ class Dataset(DatasetSpec):
         """Changes whenever the rules that shape the clean file change, forcing a rebuild."""
         payload = {
             "build": CLEAN_BUILD_VERSION,
-            "key": self.key,
+            "key": list(self.key),
             "reject_null_keys": self.reject_null_keys,
             "keep_last_by": self.keep_last_by,
         }
@@ -104,7 +104,7 @@ class Catalog(_StrictModel):
             raise ValueError(f"not in the catalog: {', '.join(unknown_names)}")
 
     def get_dataset(self, dataset_name: str) -> Dataset:
-        return Dataset(name=dataset_name, **self.datasets[dataset_name].model_dump())
+        return Dataset.model_construct(name=dataset_name, **self.datasets[dataset_name].__dict__)
 
     def select_datasets(
         self,

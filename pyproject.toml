@@ -4,14 +4,11 @@ version = "0.1.0"
 # One Python minor, the one the lockfile is tested on. `.python-version` selects it for uv.
 requires-python = ">=3.15,<3.16"
 dependencies = [
-    # CLI, config, logging
-    "typer>=0.29",
-    "python-dotenv>=1.2",
+    # Config
     "pydantic>=2.14,<3",
     "pyyaml>=6.0",
     # Storage and query
     "polars>=2.1,<3",
-    "pyarrow>=26",
     "duckdb>=2.0,<3",
     # Time zone database. Windows has none, and polars needs one to return time-zone-aware timestamps.
     "tzdata>=2026.1",

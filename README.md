@@ -45,7 +45,7 @@ The first run downloads every file in the catalog, about 600 MB as of November 2
 | `update --datasets pbp,schedules` | Limit the run to these datasets |
 | `update --skip weekly_rosters` | Leave datasets out, so one that is broken upstream does not hold back the rest |
 | `status` | What is published per dataset, and how the last run ended |
-| `verify` | Re-check every published file against its key; `--deep` also re-hashes the raw files |
+| `verify` | Re-check every published file against its key; `--deep` also re-hashes clean files and retained raw snapshots |
 | `unlock` | Clear the lock left by an update that was killed |
 
 `update` and `verify` exit non-zero when they find a problem. `status` only reports: it exits 0 even when the last run failed. `--help` on any command lists its options.
@@ -65,14 +65,13 @@ Everything is under `data/`, which git ignores. Set `NFL_LAKE_ROOT` to put it el
 
 | Folder | Contents |
 |---|---|
-| `data/raw/<dataset>/<file stem>/` | Files exactly as published, named by upstream update time and checksum |
+| `data/raw/<dataset>/<file stem>/` | Raw snapshots for `history: all` datasets, named by upstream update time and checksum |
 | `data/clean/<dataset>/<file name>` | The newest version of each file with its contract applied. Query this. |
 | `data/rejects/<dataset>/<file name>` | Rows set aside because their key was null, such as stat rows with no player |
-| `data/manifest/raw_files.jsonl` | One line per raw file stored or pruned: source URL, upstream time, checksum, rows |
+| `data/manifest/clean_state.json` | Which upstream file, checksums and contract each clean file was built from |
 | `data/manifest/runs.jsonl` | One line per run: status, errors, counts |
-| `data/manifest/clean_state.json` | Which raw file and contract each clean file was built from |
 
-Datasets marked `history: all` in `catalog/datasets.yml` keep every raw version; the rest keep only the newest.
+Datasets marked `history: all` in `catalog/datasets.yml` keep every raw snapshot on disk; the rest keep only the clean file.
 
 ### Querying
 

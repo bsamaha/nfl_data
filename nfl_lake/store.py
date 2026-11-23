@@ -1,11 +1,10 @@
 """Where things live on disk, and the manifest that records them.
 
-<root>/raw/<dataset>/<file stem>/<upstream time>_<sha12>.parquet   files exactly as published
+<root>/raw/<dataset>/<file stem>/<upstream time>_<sha12>.parquet   raw snapshots, kept only for `history: all` datasets
 <root>/clean/<dataset>/<file name>                                 latest version, contract applied
 <root>/rejects/<dataset>/<file name>                               rows set aside for a null key
-<root>/manifest/raw_files.jsonl                                    one line per stored or pruned raw file
-<root>/manifest/runs.jsonl                                         one line per update run
 <root>/manifest/clean_state.json                                   what each clean file was built from
+<root>/manifest/runs.jsonl                                         one line per update run
 <root>/_staging/<run_id>/                                          files being fetched and built; removed after the run
 <root>/.update.lock                                                present while an update runs
 """
@@ -59,45 +58,22 @@ class LakeStore:
         return path.relative_to(self.root_dir).as_posix()
 
     # manifest ------------------------------------------------------------------------------
-    def _append_jsonl_record(self, manifest_filename: str, record: dict) -> None:
+    def append_run_record(self, record: dict) -> None:
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
-        with open(self.manifest_dir / manifest_filename, "a", encoding="utf-8") as file_handle:
+        with open(self.manifest_dir / "runs.jsonl", "a", encoding="utf-8") as file_handle:
             file_handle.write(json.dumps(record, sort_keys=True) + "\n")
             file_handle.flush()
             os.fsync(file_handle.fileno())
 
-    def _read_jsonl_records(self, manifest_filename: str) -> list[dict]:
-        manifest_path = self.manifest_dir / manifest_filename
-        if not manifest_path.exists():
+    def load_run_records(self) -> list[dict]:
+        runs_path = self.manifest_dir / "runs.jsonl"
+        if not runs_path.exists():
             return []
         try:
-            with open(manifest_path, encoding="utf-8") as file_handle:
+            with open(runs_path, encoding="utf-8") as file_handle:
                 return [json.loads(line) for line in file_handle if line.strip()]
         except ValueError as error:
-            raise ValueError(f"{manifest_path} is damaged: {error}") from error
-
-    def append_raw_file_event(self, record: dict) -> None:
-        self._append_jsonl_record("raw_files.jsonl", record)
-
-    def load_raw_versions(self) -> dict[str, list[dict]]:
-        """Raw versions the manifest records as stored and not pruned, per file_id, oldest first."""
-        versions_by_file_id: dict[str, list[dict]] = {}
-        for event in self._read_jsonl_records("raw_files.jsonl"):
-            active_versions = [
-                existing
-                for existing in versions_by_file_id.get(event["file_id"], [])
-                if existing["path"] != event["path"]
-            ]
-            if event["event"] == "stored":
-                active_versions.append(event)
-            versions_by_file_id[event["file_id"]] = active_versions
-        return versions_by_file_id
-
-    def append_run_record(self, record: dict) -> None:
-        self._append_jsonl_record("runs.jsonl", record)
-
-    def load_run_records(self) -> list[dict]:
-        return self._read_jsonl_records("runs.jsonl")
+            raise ValueError(f"{runs_path} is damaged: {error}") from error
 
     def load_clean_state(self) -> dict[str, dict]:
         state_path = self.manifest_dir / "clean_state.json"
