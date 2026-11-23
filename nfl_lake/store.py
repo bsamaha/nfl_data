@@ -28,116 +28,121 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def format_utc_iso(timestamp: datetime) -> str:
+    return timestamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-class Lake:
-    def __init__(self, root: str | Path):
-        self.root = Path(root)
-        self.raw = self.root / "raw"
-        self.clean = self.root / "clean"
-        self.rejects = self.root / "rejects"
-        self.manifest = self.root / "manifest"
-        self.staging = self.root / "_staging"
-        self.lock_path = self.root / ".update.lock"
+class LakeStore:
+    def __init__(self, root_dir: str | Path):
+        self.root_dir = Path(root_dir)
+        self.raw_dir = self.root_dir / "raw"
+        self.clean_dir = self.root_dir / "clean"
+        self.rejects_dir = self.root_dir / "rejects"
+        self.manifest_dir = self.root_dir / "manifest"
+        self.staging_dir = self.root_dir / "_staging"
+        self.lock_path = self.root_dir / ".update.lock"
 
     # paths ---------------------------------------------------------------------------------
-    def raw_path(self, dataset: str, asset_name: str, updated_at: str, sha256: str) -> Path:
-        name = Path(asset_name)
-        stamp = re.sub(r"[^0-9TZ]", "", updated_at)  # 2026-11-21T16:46:06Z -> 20261121T164606Z
-        return self.raw / dataset / name.stem / f"{stamp}_{sha256[:12]}{name.suffix}"
+    def raw_file_path(self, dataset_name: str, asset_filename: str, updated_at: str, sha256: str) -> Path:
+        asset_path = Path(asset_filename)
+        compact_timestamp = re.sub(r"[^0-9TZ]", "", updated_at)  # 2026-11-21T16:46:06Z -> 20261121T164606Z
+        return self.raw_dir / dataset_name / asset_path.stem / f"{compact_timestamp}_{sha256[:12]}{asset_path.suffix}"
 
-    def clean_path(self, dataset: str, asset_name: str) -> Path:
-        return self.clean / dataset / asset_name
+    def clean_file_path(self, dataset_name: str, asset_filename: str) -> Path:
+        return self.clean_dir / dataset_name / asset_filename
 
-    def rejects_path(self, dataset: str, asset_name: str) -> Path:
-        return self.rejects / dataset / asset_name
+    def rejects_file_path(self, dataset_name: str, asset_filename: str) -> Path:
+        return self.rejects_dir / dataset_name / asset_filename
 
-    def rel(self, path: Path) -> str:
-        return path.relative_to(self.root).as_posix()
+    def relative_posix_path(self, path: Path) -> str:
+        return path.relative_to(self.root_dir).as_posix()
 
     # manifest ------------------------------------------------------------------------------
-    def _append(self, name: str, rec: dict) -> None:
-        self.manifest.mkdir(parents=True, exist_ok=True)
-        with open(self.manifest / name, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, sort_keys=True) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+    def _append_jsonl_record(self, manifest_filename: str, record: dict) -> None:
+        self.manifest_dir.mkdir(parents=True, exist_ok=True)
+        with open(self.manifest_dir / manifest_filename, "a", encoding="utf-8") as file_handle:
+            file_handle.write(json.dumps(record, sort_keys=True) + "\n")
+            file_handle.flush()
+            os.fsync(file_handle.fileno())
 
-    def _read(self, name: str) -> list[dict]:
-        path = self.manifest / name
-        if not path.exists():
+    def _read_jsonl_records(self, manifest_filename: str) -> list[dict]:
+        manifest_path = self.manifest_dir / manifest_filename
+        if not manifest_path.exists():
             return []
         try:
-            with open(path, encoding="utf-8") as f:
-                return [json.loads(line) for line in f if line.strip()]
-        except ValueError as e:
-            raise ValueError(f"{path} is damaged: {e}") from e
+            with open(manifest_path, encoding="utf-8") as file_handle:
+                return [json.loads(line) for line in file_handle if line.strip()]
+        except ValueError as error:
+            raise ValueError(f"{manifest_path} is damaged: {error}") from error
 
-    def append_raw_event(self, rec: dict) -> None:
-        self._append("raw_files.jsonl", rec)
+    def append_raw_file_event(self, record: dict) -> None:
+        self._append_jsonl_record("raw_files.jsonl", record)
 
-    def raw_versions(self) -> dict[str, list[dict]]:
-        """Raw versions the manifest records as stored and not pruned, per file, oldest first."""
-        versions: dict[str, list[dict]] = {}
-        for e in self._read("raw_files.jsonl"):
-            if "file_id" not in e:
-                raise ValueError(f"{self.manifest / 'raw_files.jsonl'} has entries without `file_id`: this lake was "
-                                 "written when the field was called `key`. Rename the field in that file, or delete "
-                                 "the lake and run update again.")
-            kept = [v for v in versions.get(e["file_id"], []) if v["path"] != e["path"]]
-            if e["event"] == "stored":
-                kept.append(e)
-            versions[e["file_id"]] = kept
-        return versions
+    def load_raw_versions(self) -> dict[str, list[dict]]:
+        """Raw versions the manifest records as stored and not pruned, per file_id, oldest first."""
+        versions_by_file_id: dict[str, list[dict]] = {}
+        for event in self._read_jsonl_records("raw_files.jsonl"):
+            if "file_id" not in event:
+                raise ValueError(
+                    f"{self.manifest_dir / 'raw_files.jsonl'} has entries without `file_id`: this lake was "
+                    "written when the field was called `key`. Rename the field in that file, or delete "
+                    "the lake and run update again."
+                )
+            active_versions = [
+                existing for existing in versions_by_file_id.get(event["file_id"], [])
+                if existing["path"] != event["path"]
+            ]
+            if event["event"] == "stored":
+                active_versions.append(event)
+            versions_by_file_id[event["file_id"]] = active_versions
+        return versions_by_file_id
 
-    def append_run(self, rec: dict) -> None:
-        self._append("runs.jsonl", rec)
+    def append_run_record(self, record: dict) -> None:
+        self._append_jsonl_record("runs.jsonl", record)
 
-    def runs(self) -> list[dict]:
-        return self._read("runs.jsonl")
+    def load_run_records(self) -> list[dict]:
+        return self._read_jsonl_records("runs.jsonl")
 
-    def load_state(self) -> dict[str, dict]:
-        path = self.manifest / "clean_state.json"
-        if not path.exists():
+    def load_clean_state(self) -> dict[str, dict]:
+        state_path = self.manifest_dir / "clean_state.json"
+        if not state_path.exists():
             return {}
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except ValueError as e:
-            raise ValueError(f"{path} is damaged: {e}") from e
+            return json.loads(state_path.read_text(encoding="utf-8"))
+        except ValueError as error:
+            raise ValueError(f"{state_path} is damaged: {error}") from error
 
-    def save_state(self, state: dict[str, dict]) -> None:
-        self.manifest.mkdir(parents=True, exist_ok=True)
-        tmp = self.manifest / "clean_state.json.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(json.dumps(state, indent=1, sort_keys=True))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, self.manifest / "clean_state.json")
+    def save_clean_state(self, clean_state: dict[str, dict]) -> None:
+        self.manifest_dir.mkdir(parents=True, exist_ok=True)
+        temp_path = self.manifest_dir / "clean_state.json.tmp"
+        with open(temp_path, "w", encoding="utf-8") as file_handle:
+            file_handle.write(json.dumps(clean_state, indent=1, sort_keys=True))
+            file_handle.flush()
+            os.fsync(file_handle.fileno())
+        os.replace(temp_path, self.manifest_dir / "clean_state.json")
 
     # lock ----------------------------------------------------------------------------------
-    def _lock_holder(self) -> str:
+    def _format_lock_holder(self) -> str:
         """' (pid N since T)' as written by the update holding the lock, or '' if the file does not say."""
         try:
-            held = json.loads(self.lock_path.read_text(encoding="utf-8"))
-            return f" (pid {held['pid']} since {held['started']})"
+            lock_info = json.loads(self.lock_path.read_text(encoding="utf-8"))
+            return f" (pid {lock_info['pid']} since {lock_info['started']})"
         except (OSError, ValueError, KeyError, TypeError):
             return ""
 
     @contextmanager
-    def lock(self) -> Iterator[None]:
-        self.root.mkdir(parents=True, exist_ok=True)
+    def acquire_lock(self) -> Iterator[None]:
+        self.root_dir.mkdir(parents=True, exist_ok=True)
         try:
-            fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            lock_fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             raise LakeLocked(
-                f"{self.lock_path} exists{self._lock_holder()}: another update is running, or one was killed. "
+                f"{self.lock_path} exists{self._format_lock_holder()}: another update is running, or one was killed. "
                 "If none is running, clear it with `python -m nfl_lake unlock`."
             ) from None
         try:
-            with os.fdopen(fd, "w") as f:
-                f.write(json.dumps({"pid": os.getpid(), "started": iso(utc_now())}))
+            with os.fdopen(lock_fd, "w") as lock_file:
+                lock_file.write(json.dumps({"pid": os.getpid(), "started": format_utc_iso(utc_now())}))
             yield
         finally:
             self.lock_path.unlink(missing_ok=True)

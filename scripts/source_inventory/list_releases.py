@@ -5,39 +5,53 @@ Uses one unauthenticated API call.
 
 Usage: python list_releases.py OUT_DIR
 """
-import json, sys, urllib.request, collections
+import collections
+import json
+import sys
+import urllib.request
 from pathlib import Path
-from nfl_remote import UA, YEAR, season_of
 
-out = Path(sys.argv[1]); out.mkdir(parents=True, exist_ok=True)
-rels, page = [], 1
+from nfl_remote import SEASON_YEAR_PATTERN, USER_AGENT_HEADERS, extract_season_year
+
+output_dir = Path(sys.argv[1])
+output_dir.mkdir(parents=True, exist_ok=True)
+releases, page = [], 1
 while True:
-    url = f"https://api.github.com/repos/nflverse/nflverse-data/releases?per_page=100&page={page}"
-    req = urllib.request.Request(url, headers={**UA, "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        batch = json.load(r)
-        remaining = r.headers.get("X-RateLimit-Remaining")
-    rels += batch
+    page_url = f"https://api.github.com/repos/nflverse/nflverse-data/releases?per_page=100&page={page}"
+    request = urllib.request.Request(page_url, headers={**USER_AGENT_HEADERS, "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        release_page = json.load(response)
+        rate_limit_remaining = response.headers.get("X-RateLimit-Remaining")
+    releases += release_page
     page += 1
-    if len(batch) < 100:
+    if len(release_page) < 100:
         break
-print("releases:", len(rels), "| api calls left this hour:", remaining)
+print("releases:", len(releases), "| api calls left this hour:", rate_limit_remaining)
 
-slim = []
-for r in rels:
-    slim.append({"tag": r["tag_name"],
-                 "assets": [{"name": a["name"], "size": a["size"], "updated_at": a["updated_at"],
-                             "url": a["browser_download_url"]} for a in r.get("assets", [])]})
-(out / "releases.json").write_text(json.dumps(slim, indent=1))
+slim_releases = []
+for release in releases:
+    slim_releases.append({
+        "tag": release["tag_name"],
+        "assets": [
+            {
+                "name": asset["name"],
+                "size": asset["size"],
+                "updated_at": asset["updated_at"],
+                "url": asset["browser_download_url"],
+            }
+            for asset in release.get("assets", [])
+        ],
+    })
+(output_dir / "releases.json").write_text(json.dumps(slim_releases, indent=1))
 
-for r in sorted(slim, key=lambda x: x["tag"]):
-    a = r["assets"]
-    ext = collections.Counter(x["name"].rsplit(".", 1)[-1] for x in a)
-    pq = [x for x in a if x["name"].endswith(".parquet")]
-    years = sorted({season_of(x["name"]) for x in pq} - {None})
-    latest = max((x["updated_at"] for x in a), default="-")
-    mb = sum(x["size"] for x in pq) / 1e6
-    stems = collections.Counter(YEAR.sub("{Y}", x["name"]) for x in pq)
-    print(f"\n[{r['tag']}] assets={len(a)} ext={dict(ext)} parquet_MB={mb:.1f} latest_update={latest}")
-    print(f"   seasons: {years[0]}-{years[-1]} ({len(years)})" if years else "   seasons: (no year in names)")
-    print("   parquet patterns:", dict(stems.most_common(8)))
+for release in sorted(slim_releases, key=lambda item: item["tag"]):
+    release_assets = release["assets"]
+    extension_counts = collections.Counter(asset["name"].rsplit(".", 1)[-1] for asset in release_assets)
+    parquet_assets = [asset for asset in release_assets if asset["name"].endswith(".parquet")]
+    seasons = sorted({extract_season_year(asset["name"]) for asset in parquet_assets} - {None})
+    latest_update = max((asset["updated_at"] for asset in release_assets), default="-")
+    parquet_megabytes = sum(asset["size"] for asset in parquet_assets) / 1e6
+    filename_patterns = collections.Counter(SEASON_YEAR_PATTERN.sub("{Y}", asset["name"]) for asset in parquet_assets)
+    print(f"\n[{release['tag']}] assets={len(release_assets)} ext={dict(extension_counts)} parquet_MB={parquet_megabytes:.1f} latest_update={latest_update}")
+    print(f"   seasons: {seasons[0]}-{seasons[-1]} ({len(seasons)})" if seasons else "   seasons: (no year in names)")
+    print("   parquet patterns:", dict(filename_patterns.most_common(8)))

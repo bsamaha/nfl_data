@@ -10,55 +10,59 @@ import pytest
 
 from nfl_lake.catalog import Catalog
 from nfl_lake.source import LocalDirSource
-from nfl_lake.store import Lake
+from nfl_lake.store import LakeStore
 
 
-class Upstream:
+class FakeUpstream:
     """A folder of <release>/<file> that a test writes to, changes and breaks."""
 
-    def __init__(self, root: Path):
-        self.root = root
+    def __init__(self, root_dir: Path):
+        self.root_dir = root_dir
 
-    def put(self, release: str, name: str, df: pl.DataFrame) -> Path:
-        path = self.root / release / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(path)
-        return path
+    def put(self, release_tag: str, filename: str, frame: pl.DataFrame) -> Path:
+        asset_path = self.root_dir / release_tag / filename
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        frame.write_parquet(asset_path)
+        return asset_path
 
-    def remove(self, release: str, name: str) -> None:
-        (self.root / release / name).unlink()
+    def remove(self, release_tag: str, filename: str) -> None:
+        (self.root_dir / release_tag / filename).unlink()
 
     @property
     def source(self) -> LocalDirSource:
-        return LocalDirSource(self.root)
+        return LocalDirSource(self.root_dir)
 
 
 @pytest.fixture
-def upstream(tmp_path: Path) -> Upstream:
-    return Upstream(tmp_path / "upstream")
+def upstream(tmp_path: Path) -> FakeUpstream:
+    return FakeUpstream(tmp_path / "upstream")
 
 
 @pytest.fixture
-def lake(tmp_path: Path) -> Lake:
-    return Lake(tmp_path / "lake")
+def lake(tmp_path: Path) -> LakeStore:
+    return LakeStore(tmp_path / "lake")
 
 
-def catalog_of(**datasets: dict) -> Catalog:
+def build_catalog(**datasets: dict) -> Catalog:
     return Catalog.model_validate({"source": {"repo": "example/repo"}, "datasets": datasets})
 
 
 # A seasonal dataset shaped like nflverse player stats.
-STATS = {"release": "stats_player", "file": "stats_player_week_{season}.parquet", "min_season": 2020,
-         "key": ["player_id", "game_id"]}
-STATS_FILE = "stats_player_week_2024.parquet"
-STATS_FILE_ID = f"stats/{STATS_FILE}"
+STATS_DATASET_SPEC = {
+    "release": "stats_player",
+    "file": "stats_player_week_{season}.parquet",
+    "min_season": 2020,
+    "key": ["player_id", "game_id"],
+}
+STATS_FILENAME = "stats_player_week_2024.parquet"
+STATS_FILE_ID = f"stats/{STATS_FILENAME}"
 
 # A single-file dataset shaped like the nflverse schedule.
-GAMES = {"release": "schedules", "file": "games.parquet", "key": ["game_id"]}
+GAMES_DATASET_SPEC = {"release": "schedules", "file": "games.parquet", "key": ["game_id"]}
 GAMES_FILE_ID = "games/games.parquet"
 
 
-def stats_frame(targets: int = 8) -> pl.DataFrame:
+def make_stats_frame(targets: int = 8) -> pl.DataFrame:
     """Two players in one game. The 32-bit and the nullable integer column are there so that comparing a clean
     file with this frame also checks that integer types survive."""
     return pl.DataFrame({

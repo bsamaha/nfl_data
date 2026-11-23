@@ -1,4 +1,4 @@
-"""Where the files come from.
+"""Where upstream files come from.
 
 `GitHubReleasesSource` reads the public nflverse-data releases. `LocalDirSource` reads a folder laid out
 as `<release>/<file>`; the tests use it, and it also works as an offline mirror.
@@ -17,11 +17,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol, TypeVar
 
-from .store import iso
+from .store import format_utc_iso
 
 USER_AGENT = "nfl-lake-ingest"
-CHUNK = 1 << 20
-T = TypeVar("T")
+DOWNLOAD_CHUNK_BYTES = 1 << 20
+ResultT = TypeVar("ResultT")
 
 
 class SourceError(RuntimeError):
@@ -29,129 +29,142 @@ class SourceError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class Asset:
-    release: str
-    name: str
-    size: int
+class UpstreamAsset:
+    release_tag: str
+    filename: str
+    size_bytes: int
     updated_at: str        # ISO 8601 UTC, as upstream reports it
     sha256: str | None     # hex digest, when upstream publishes one
-    url: str
+    download_url: str
 
 
-Listing = dict[str, dict[str, Asset]]  # release -> file name -> asset
+UpstreamListing = dict[str, dict[str, UpstreamAsset]]  # release_tag -> filename -> asset
 
 
-class Source(Protocol):
-    def list_assets(self) -> Listing: ...
+class UpstreamSource(Protocol):
+    def list_assets(self) -> UpstreamListing: ...
 
-    def fetch(self, asset: Asset, dest: Path) -> None: ...
+    def fetch(self, asset: UpstreamAsset, dest_path: Path) -> None: ...
 
 
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(CHUNK):
-            h.update(chunk)
-    return h.hexdigest()
+def compute_file_sha256(file_path: Path) -> str:
+    hasher = hashlib.sha256()
+    with open(file_path, "rb") as file_handle:
+        while chunk := file_handle.read(DOWNLOAD_CHUNK_BYTES):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 class GitHubReleasesSource:
     """All releases of one GitHub repository: one API call per 100 releases."""
 
-    def __init__(self, repo: str, token: str | None = None, retries: int = 3, backoff: float = 2.0):
+    def __init__(self, repo: str, token: str | None = None, max_attempts: int = 3, backoff_seconds: float = 2.0):
         self.repo = repo
         self.token = token
-        self.retries = retries
-        self.backoff = backoff
+        self.max_attempts = max_attempts
+        self.backoff_seconds = backoff_seconds
 
-    def _retry(self, what: str, attempt: Callable[[], T]) -> T:
-        """Run `attempt` up to `retries` times. A server error or a failed connection is retried; a rate limit or other status below 500 is not."""
-        last: Exception | None = None
-        for n in range(1, self.retries + 1):
+    def _retry_transient_errors(self, operation: str, action: Callable[[], ResultT]) -> ResultT:
+        """Run `action` up to `max_attempts` times. Server errors and failed connections are retried; rate limits and 4xx are not."""
+        last_error: Exception | None = None
+        for attempt_number in range(1, self.max_attempts + 1):
             try:
-                return attempt()
-            except (OSError, http.client.HTTPException) as e:  # includes HTTP 5xx, timeouts and a dropped connection
-                last = e
-                if n < self.retries:
-                    time.sleep(self.backoff * n)
-        raise SourceError(f"failed after {self.retries} attempts while {what}: {last}") from last
+                return action()
+            except (OSError, http.client.HTTPException) as error:  # includes HTTP 5xx, timeouts and dropped connections
+                last_error = error
+                if attempt_number < self.max_attempts:
+                    time.sleep(self.backoff_seconds * attempt_number)
+        raise SourceError(f"failed after {self.max_attempts} attempts while {operation}: {last_error}") from last_error
 
-    def _open(self, req: urllib.request.Request, what: str):
-        """One request. A rate limit or any status below 500 is final, so it becomes a SourceError here."""
+    def _open_request(self, request: urllib.request.Request, operation: str):
+        """Perform one HTTP request. A rate limit or any status below 500 is final, so it becomes a SourceError here."""
         try:
-            return urllib.request.urlopen(req, timeout=120)
-        except urllib.error.HTTPError as e:
-            if e.code in (403, 429) and e.headers.get("X-RateLimit-Remaining") == "0":
-                reset = e.headers.get("X-RateLimit-Reset")
-                when = datetime.fromtimestamp(int(reset), timezone.utc).strftime("%H:%M UTC") if reset else "later"
-                raise SourceError(f"GitHub API rate limit reached while {what}. Retry after {when}, or set GITHUB_TOKEN.") from e
-            if e.code < 500:
-                raise SourceError(f"HTTP {e.code} while {what}") from e
+            return urllib.request.urlopen(request, timeout=120)
+        except urllib.error.HTTPError as http_error:
+            if http_error.code in (403, 429) and http_error.headers.get("X-RateLimit-Remaining") == "0":
+                reset_epoch = http_error.headers.get("X-RateLimit-Reset")
+                reset_time_utc = (
+                    datetime.fromtimestamp(int(reset_epoch), timezone.utc).strftime("%H:%M UTC")
+                    if reset_epoch else "later"
+                )
+                raise SourceError(
+                    f"GitHub API rate limit reached while {operation}. Retry after {reset_time_utc}, or set GITHUB_TOKEN."
+                ) from http_error
+            if http_error.code < 500:
+                raise SourceError(f"HTTP {http_error.code} while {operation}") from http_error
             raise
 
-    def list_assets(self) -> Listing:
+    def list_assets(self) -> UpstreamListing:
         headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        what = f"listing {self.repo} releases"
-        listing: Listing = {}
+        operation = f"listing {self.repo} releases"
+        listing: UpstreamListing = {}
         page = 1
         while True:
-            url = f"https://api.github.com/repos/{self.repo}/releases?per_page=100&page={page}"
+            page_url = f"https://api.github.com/repos/{self.repo}/releases?per_page=100&page={page}"
 
-            def read_page() -> list[dict]:
-                with self._open(urllib.request.Request(url, headers=headers), what) as r:
-                    return json.load(r)
+            def read_release_page() -> list[dict]:
+                with self._open_request(urllib.request.Request(page_url, headers=headers), operation) as response:
+                    return json.load(response)
 
-            batch = self._retry(what, read_page)
-            for rel in batch:
-                files = listing.setdefault(rel["tag_name"], {})
-                for a in rel.get("assets", []):
-                    digest = a.get("digest") or ""
-                    files[a["name"]] = Asset(
-                        release=rel["tag_name"],
-                        name=a["name"],
-                        size=int(a["size"]),
-                        updated_at=a["updated_at"],
-                        sha256=digest.split(":", 1)[1] if digest.startswith("sha256:") else None,
-                        url=a["browser_download_url"],
+            release_page = self._retry_transient_errors(operation, read_release_page)
+            for release_payload in release_page:
+                release_tag = release_payload["tag_name"]
+                assets_by_filename = listing.setdefault(release_tag, {})
+                for asset_payload in release_payload.get("assets", []):
+                    raw_digest = asset_payload.get("digest") or ""
+                    assets_by_filename[asset_payload["name"]] = UpstreamAsset(
+                        release_tag=release_tag,
+                        filename=asset_payload["name"],
+                        size_bytes=int(asset_payload["size"]),
+                        updated_at=asset_payload["updated_at"],
+                        sha256=raw_digest.split(":", 1)[1] if raw_digest.startswith("sha256:") else None,
+                        download_url=asset_payload["browser_download_url"],
                     )
-            if len(batch) < 100:
+            if len(release_page) < 100:
                 return listing
             page += 1
 
-    def fetch(self, asset: Asset, dest: Path) -> None:
+    def fetch(self, asset: UpstreamAsset, dest_path: Path) -> None:
         # No token here: the download is public and redirects to another host.
-        req = urllib.request.Request(asset.url, headers={"User-Agent": USER_AGENT})
-        what = f"downloading {asset.name}"
+        request = urllib.request.Request(asset.download_url, headers={"User-Agent": USER_AGENT})
+        operation = f"downloading {asset.filename}"
 
-        def download() -> None:
-            with self._open(req, what) as r, open(dest, "wb") as f:
-                shutil.copyfileobj(r, f, CHUNK)
-            got = Path(dest).stat().st_size
-            if got < asset.size:  # http.client returns a body that ended early without raising
-                raise OSError(f"body ended after {got} of {asset.size} bytes")
+        def download_once() -> None:
+            with self._open_request(request, operation) as response, open(dest_path, "wb") as output_file:
+                shutil.copyfileobj(response, output_file, DOWNLOAD_CHUNK_BYTES)
+            downloaded_bytes = Path(dest_path).stat().st_size
+            if downloaded_bytes < asset.size_bytes:  # http.client returns a body that ended early without raising
+                raise OSError(f"body ended after {downloaded_bytes} of {asset.size_bytes} bytes")
 
-        self._retry(what, download)
+        self._retry_transient_errors(operation, download_once)
 
 
 class LocalDirSource:
     """A folder of `<release>/<file>` used as the upstream."""
 
-    def __init__(self, root: str | Path):
-        self.root = Path(root).resolve()
+    def __init__(self, root_dir: str | Path):
+        self.root_dir = Path(root_dir).resolve()
 
-    def list_assets(self) -> Listing:
-        if not self.root.is_dir():
-            raise SourceError(f"source folder {self.root} does not exist")
-        listing: Listing = {}
-        for rel in sorted(p for p in self.root.iterdir() if p.is_dir()):
-            files = listing.setdefault(rel.name, {})
-            for f in sorted(p for p in rel.iterdir() if p.is_file()):
-                st = f.stat()
-                updated = iso(datetime.fromtimestamp(st.st_mtime, timezone.utc))
-                files[f.name] = Asset(rel.name, f.name, st.st_size, updated, sha256_file(f), f.as_uri())
+    def list_assets(self) -> UpstreamListing:
+        if not self.root_dir.is_dir():
+            raise SourceError(f"source folder {self.root_dir} does not exist")
+        listing: UpstreamListing = {}
+        for release_dir in sorted(path for path in self.root_dir.iterdir() if path.is_dir()):
+            assets_by_filename = listing.setdefault(release_dir.name, {})
+            for file_path in sorted(path for path in release_dir.iterdir() if path.is_file()):
+                file_stat = file_path.stat()
+                updated_at = format_utc_iso(datetime.fromtimestamp(file_stat.st_mtime, timezone.utc))
+                assets_by_filename[file_path.name] = UpstreamAsset(
+                    release_tag=release_dir.name,
+                    filename=file_path.name,
+                    size_bytes=file_stat.st_size,
+                    updated_at=updated_at,
+                    sha256=compute_file_sha256(file_path),
+                    download_url=file_path.as_uri(),
+                )
         return listing
 
-    def fetch(self, asset: Asset, dest: Path) -> None:
-        shutil.copyfile(self.root / asset.release / asset.name, dest)
+    def fetch(self, asset: UpstreamAsset, dest_path: Path) -> None:
+        shutil.copyfile(self.root_dir / asset.release_tag / asset.filename, dest_path)

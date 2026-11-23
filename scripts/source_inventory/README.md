@@ -19,9 +19,9 @@ uv run python scripts/source_inventory/probe_values.py data/_inventory
 | Script | What it does | Network cost |
 |---|---|---|
 | `list_releases.py` | Lists every release and file with size and last-update time. Writes `releases.json`. | 1 GitHub API call |
-| `probe_schemas.py` | Reads the Parquet footer of every file listed in `SETS`. Writes `schemas.json` with columns, types and row counts. | about 25 MB |
+| `probe_schemas.py` | Reads the Parquet footer of every file listed in `DATASET_PATTERNS`. Writes `schemas.json` with columns, types and row counts. | about 25 MB |
 | `analyze_schemas.py` | Prints, per dataset, the seasons where columns were added, removed or changed type. Pass a comma-separated list of labels to limit the output. | None |
-| `probe_keys_all_seasons.py` | Tests the key of each dataset listed in `CHECKS` in every season, matches game ids against the schedule where the dataset has them, and prints the seasons where relocation team codes, postseason week numbers and the participation personnel format change. | 142 MB |
+| `probe_keys_all_seasons.py` | Tests the key of each dataset listed in `KEY_CHECKS` in every season, matches game ids against the schedule where the dataset has them, and prints the seasons where relocation team codes, postseason week numbers and the participation personnel format change. | 142 MB |
 | `probe_values.py` | Checks value domains, ID coverage against `players`, and team codes, on the current and previous seasons, 2015 and 2019, plus 1999 and 2024 for some datasets. | 39 MB, 1 GitHub API call |
 
 Costs were measured on 21 Nov 2026. A full run transfers about 205 MB and takes about a minute. The three probe scripts each print a `bytes fetched` total.

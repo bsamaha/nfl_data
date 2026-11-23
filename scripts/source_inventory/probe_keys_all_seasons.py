@@ -1,4 +1,4 @@
-"""Test the key of each dataset listed in CHECKS in every season, match game ids against the schedule where the
+"""Test the key of each dataset listed in KEY_CHECKS in every season, match game ids against the schedule where the
 dataset has them, and print the seasons where relocation team codes, postseason week numbers and the participation
 personnel format change.
 
@@ -7,17 +7,32 @@ Run list_releases.py first.
 
 Usage: python probe_keys_all_seasons.py OUT_DIR
 """
-import sys, concurrent.futures as cf
+import concurrent.futures as concurrent_futures
+import sys
+
 import polars as pl
-from nfl_remote import NO_FILES, load_listing, assets, season_of, read_columns, count_key_problems, print_fetched
+from nfl_remote import (
+    UNMATCHED_ASSET_PATTERNS,
+    count_key_violations,
+    extract_season_year,
+    find_release_assets,
+    load_releases_by_tag,
+    print_bytes_fetched,
+    read_remote_columns,
+)
 
-L = load_listing(sys.argv[1])
-GAMES = read_columns(next(a for a in L["schedules"]["assets"] if a["name"] == "games.parquet"))
-GID = {y: set(g["game_id"]) for (y,), g in GAMES.group_by("season")}
-RELOCATED = {"OAK", "SD", "STL", "LV", "LAC", "LA"}
+releases_by_tag = load_releases_by_tag(sys.argv[1])
+schedules_frame = read_remote_columns(
+    next(asset for asset in releases_by_tag["schedules"]["assets"] if asset["name"] == "games.parquet")
+)
+schedule_game_ids_by_season = {
+    season: set(season_games["game_id"])
+    for (season,), season_games in schedules_frame.group_by("season")
+}
+RELOCATED_TEAM_CODES = {"OAK", "SD", "STL", "LV", "LAC", "LA"}
 
-# label: (release tag, file regex, key, extra columns to read, game-id column or None)
-CHECKS = {
+# dataset_label: (release tag, file regex, key columns, extra columns to read, game-id column or None)
+KEY_CHECKS = {
     "pbp": ("pbp", r"play_by_play_\d{4}\.parquet", ["game_id", "play_id"], ["home_team"], "game_id"),
     "stats_player_week": ("stats_player", r"stats_player_week_\d{4}\.parquet", ["player_id", "game_id"], ["week", "season_type"], "game_id"),
     "stats_team_week": ("stats_team", r"stats_team_week_\d{4}\.parquet", ["team", "game_id"], [], "game_id"),
@@ -27,83 +42,143 @@ CHECKS = {
     # roster files before 1990 are not read
     "rosters": ("rosters", r"roster_(199\d|20\d\d)\.parquet", ["season", "team", "gsis_id"], [], None),
     # the week-based depth chart layout ended with the 2024 season
-    "depth_charts_week_layout": ("depth_charts", r"depth_charts_(200\d|201\d|202[0-4])\.parquet",
-                                 ["season", "club_code", "week", "game_type", "formation", "depth_position", "depth_team", "gsis_id"], [], None),
-    "depth_charts_snapshot_layout": ("depth_charts", r"depth_charts_(202[5-9]|20[3-9]\d)\.parquet", ["dt", "team", "pos_id", "pos_rank"], [], None),
+    "depth_charts_week_layout": (
+        "depth_charts",
+        r"depth_charts_(200\d|201\d|202[0-4])\.parquet",
+        ["season", "club_code", "week", "game_type", "formation", "depth_position", "depth_team", "gsis_id"],
+        [],
+        None,
+    ),
+    "depth_charts_snapshot_layout": (
+        "depth_charts",
+        r"depth_charts_(202[5-9]|20[3-9]\d)\.parquet",
+        ["dt", "team", "pos_id", "pos_rank"],
+        [],
+        None,
+    ),
     "pbp_participation": ("pbp_participation", r"pbp_participation_\d{4}\.parquet", ["nflverse_game_id", "play_id"], ["offense_personnel"], "nflverse_game_id"),
     "ftn_charting": ("ftn_charting", r"ftn_charting_\d{4}\.parquet", ["nflverse_game_id", "nflverse_play_id"], [], "nflverse_game_id"),
     "pfr_week_rec": ("pfr_advstats", r"advstats_week_rec_\d{4}\.parquet", ["game_id", "pfr_player_id"], [], "game_id"),
 }
 
 
-def one(job):
-    label, a, key, extra, gcol = job
-    y = season_of(a["name"])
+def check_one_asset(job):
+    dataset_label, asset, key_columns, extra_columns, game_id_column = job
+    season = extract_season_year(asset["name"])
     try:
-        df = read_columns(a, key + extra)
-        null_rows, dup = count_key_problems(df, key)
-        ids = [c for c in key if c.endswith("_id") and df[c].dtype == pl.String]
-        rec = {"season": y, "rows": df.height, "null_rows": null_rows, "dup": dup,
-               "nulls": {c: df[c].null_count() for c in key if df[c].null_count()},
-               "empty": {c: int((df[c] == "").sum()) for c in ids if (df[c] == "").sum()}}
-        if gcol:
-            g = set(df[gcol].drop_nulls().unique())
-            rec["not_in_sched"] = len(g - GID.get(y, set()))
-            rec["sched_missing"] = len(GID.get(y, set()) - g)
-        if label == "pbp":
-            rec["home_codes"] = sorted(set(df["home_team"].unique()) & RELOCATED)
-        if label == "stats_player_week":
-            rec["post_weeks"] = df.filter(pl.col("season_type") == "POST").select(pl.col("week").min().alias("lo"), pl.col("week").max().alias("hi")).row(0)
-        if label == "pbp_participation":
-            rec["personnel"] = (df["offense_personnel"].drop_nulls().mode().to_list()[:1], round(df["offense_personnel"].is_not_null().mean(), 3))
-        return label, rec
-    except Exception as e:
-        return label, {"season": y, "error": f"{type(e).__name__}: {e}"[:160]}
+        frame = read_remote_columns(asset, key_columns + extra_columns)
+        null_key_rows, duplicate_key_rows = count_key_violations(frame, key_columns)
+        string_id_columns = [col for col in key_columns if col.endswith("_id") and frame[col].dtype == pl.String]
+        season_report = {
+            "season": season,
+            "rows": frame.height,
+            "null_rows": null_key_rows,
+            "dup": duplicate_key_rows,
+            "nulls": {col: frame[col].null_count() for col in key_columns if frame[col].null_count()},
+            "empty": {col: int((frame[col] == "").sum()) for col in string_id_columns if (frame[col] == "").sum()},
+        }
+        if game_id_column:
+            dataset_game_ids = set(frame[game_id_column].drop_nulls().unique())
+            season_report["not_in_sched"] = len(dataset_game_ids - schedule_game_ids_by_season.get(season, set()))
+            season_report["sched_missing"] = len(schedule_game_ids_by_season.get(season, set()) - dataset_game_ids)
+        if dataset_label == "pbp":
+            season_report["home_codes"] = sorted(set(frame["home_team"].unique()) & RELOCATED_TEAM_CODES)
+        if dataset_label == "stats_player_week":
+            season_report["post_weeks"] = (
+                frame.filter(pl.col("season_type") == "POST")
+                .select(pl.col("week").min().alias("min_week"), pl.col("week").max().alias("max_week"))
+                .row(0)
+            )
+        if dataset_label == "pbp_participation":
+            season_report["personnel"] = (
+                frame["offense_personnel"].drop_nulls().mode().to_list()[:1],
+                round(frame["offense_personnel"].is_not_null().mean(), 3),
+            )
+        return dataset_label, season_report
+    except Exception as error:
+        return dataset_label, {"season": season, "error": f"{type(error).__name__}: {error}"[:160]}
 
 
-def changes(pairs):
+def find_value_changes(season_value_pairs):
     """Keep only the seasons where the value differs from the season before."""
-    out, prev = {}, object()
-    for season, value in pairs:
-        if value != prev:
-            out[season] = value
-            prev = value
-    return out
+    transitions, previous_value = {}, object()
+    for season, value in season_value_pairs:
+        if value != previous_value:
+            transitions[season] = value
+            previous_value = value
+    return transitions
 
 
-jobs = [(label, a, key, extra, gcol) for label, (tag, rx, key, extra, gcol) in CHECKS.items() for a in assets(L, tag, rx)]
-res = {}
-with cf.ThreadPoolExecutor(6) as ex:
-    for label, rec in ex.map(one, jobs):
-        res.setdefault(label, []).append(rec)
+check_jobs = [
+    (dataset_label, asset, key_columns, extra_columns, game_id_column)
+    for dataset_label, (release_tag, filename_regex, key_columns, extra_columns, game_id_column) in KEY_CHECKS.items()
+    for asset in find_release_assets(releases_by_tag, release_tag, filename_regex)
+]
+reports_by_dataset: dict[str, list[dict]] = {}
+with concurrent_futures.ThreadPoolExecutor(6) as executor:
+    for dataset_label, season_report in executor.map(check_one_asset, check_jobs):
+        reports_by_dataset.setdefault(dataset_label, []).append(season_report)
 
-for label, recs in res.items():
-    recs.sort(key=lambda r: r["season"])
-    ok = [r for r in recs if "error" not in r]
-    print(f"\n## {label}: files={len(recs)} seasons {recs[0]['season']}-{recs[-1]['season']} key={CHECKS[label][2]}")
-    print("   null-key rows by season:", {r["season"]: r["null_rows"] for r in ok if r["null_rows"]} or "none")
-    print("   dup rows by season:", {r["season"]: r["dup"] for r in ok if r["dup"]} or "none")
-    print("   null key cells by season:", {r["season"]: r["nulls"] for r in ok if r["nulls"]} or "none")
-    print("   empty-string ids by season:", {r["season"]: r["empty"] for r in ok if r["empty"]} or "none")
-    print("   empty files:", [r["season"] for r in ok if r["rows"] == 0] or "none")
-    if CHECKS[label][4]:
-        print("   game ids not in schedules:", {r["season"]: r["not_in_sched"] for r in ok if r["not_in_sched"]} or "none",
-              "| schedule games absent here:", {r["season"]: r["sched_missing"] for r in ok if r["sched_missing"]} or "none")
-    if label == "pbp":
-        print("   home_team relocation codes, by season where they change:", changes((r["season"], r["home_codes"]) for r in ok))
-    if label == "stats_player_week":
-        print("   POST week range, by season where it changes:", changes((r["season"], r["post_weeks"]) for r in ok if r["post_weeks"] != (None, None)))
-    if label == "pbp_participation":
-        print("   most common personnel value and non-null share, by season where they change:", changes((r["season"], r["personnel"]) for r in ok))
-    for r in recs:
-        if "error" in r:
-            print("   ERROR", r)
+for dataset_label, season_reports in reports_by_dataset.items():
+    season_reports.sort(key=lambda report: report["season"])
+    valid_reports = [report for report in season_reports if "error" not in report]
+    print(
+        f"\n## {dataset_label}: files={len(season_reports)} "
+        f"seasons {season_reports[0]['season']}-{season_reports[-1]['season']} key={KEY_CHECKS[dataset_label][2]}"
+    )
+    print("   null-key rows by season:", {report["season"]: report["null_rows"] for report in valid_reports if report["null_rows"]} or "none")
+    print("   dup rows by season:", {report["season"]: report["dup"] for report in valid_reports if report["dup"]} or "none")
+    print("   null key cells by season:", {report["season"]: report["nulls"] for report in valid_reports if report["nulls"]} or "none")
+    print("   empty-string ids by season:", {report["season"]: report["empty"] for report in valid_reports if report["empty"]} or "none")
+    print("   empty files:", [report["season"] for report in valid_reports if report["rows"] == 0] or "none")
+    if KEY_CHECKS[dataset_label][4]:
+        print(
+            "   game ids not in schedules:",
+            {report["season"]: report["not_in_sched"] for report in valid_reports if report["not_in_sched"]} or "none",
+            "| schedule games absent here:",
+            {report["season"]: report["sched_missing"] for report in valid_reports if report["sched_missing"]} or "none",
+        )
+    if dataset_label == "pbp":
+        print(
+            "   home_team relocation codes, by season where they change:",
+            find_value_changes((report["season"], report["home_codes"]) for report in valid_reports),
+        )
+    if dataset_label == "stats_player_week":
+        print(
+            "   POST week range, by season where it changes:",
+            find_value_changes(
+                (report["season"], report["post_weeks"])
+                for report in valid_reports
+                if report["post_weeks"] != (None, None)
+            ),
+        )
+    if dataset_label == "pbp_participation":
+        print(
+            "   most common personnel value and non-null share, by season where they change:",
+            find_value_changes((report["season"], report["personnel"]) for report in valid_reports),
+        )
+    for report in season_reports:
+        if "error" in report:
+            print("   ERROR", report)
 
 print("\n## schedules")
-post = GAMES.filter(pl.col("game_type") != "REG").group_by("season").agg(pl.col("week").min().alias("lo"), pl.col("week").max().alias("hi")).sort("season")
-print("   POST week range, by season where it changes:", changes((s, (lo, hi)) for s, lo, hi in post.rows()))
-home = GAMES.group_by("season").agg(pl.col("home_team").unique().alias("t")).sort("season")
-print("   relocation codes, by season where they change:", changes((s, sorted(set(t) & RELOCATED)) for s, t in home.rows()))
-print_fetched()
-if NO_FILES or any("error" in r for recs in res.values() for r in recs):
+postseason_weeks = (
+    schedules_frame.filter(pl.col("game_type") != "REG")
+    .group_by("season")
+    .agg(pl.col("week").min().alias("min_week"), pl.col("week").max().alias("max_week"))
+    .sort("season")
+)
+print(
+    "   POST week range, by season where it changes:",
+    find_value_changes((season, (min_week, max_week)) for season, min_week, max_week in postseason_weeks.rows()),
+)
+home_teams_by_season = schedules_frame.group_by("season").agg(pl.col("home_team").unique().alias("teams")).sort("season")
+print(
+    "   relocation codes, by season where they change:",
+    find_value_changes(
+        (season, sorted(set(teams) & RELOCATED_TEAM_CODES)) for season, teams in home_teams_by_season.rows()
+    ),
+)
+print_bytes_fetched()
+if UNMATCHED_ASSET_PATTERNS or any("error" in report for reports in reports_by_dataset.values() for report in reports):
     sys.exit(1)

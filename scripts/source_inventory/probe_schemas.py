@@ -1,19 +1,29 @@
-"""Read the Parquet footer of every file listed in SETS and save column lists and row counts.
+"""Read the Parquet footer of every file listed in DATASET_PATTERNS and save column lists and row counts.
 
 Only the tail of each file is fetched: the last 64 KB, then the exact footer when it is larger.
 Writes OUT_DIR/schemas.json. Run list_releases.py first.
 
 Usage: python probe_schemas.py OUT_DIR
 """
-import json, sys, concurrent.futures as cf
+import concurrent.futures as concurrent_futures
+import json
+import sys
 from pathlib import Path
-from nfl_remote import NO_FILES, load_listing, assets, season_of, read_footer, print_fetched
 
-out = Path(sys.argv[1])
-L = load_listing(out)
+from nfl_remote import (
+    UNMATCHED_ASSET_PATTERNS,
+    extract_season_year,
+    find_release_assets,
+    load_releases_by_tag,
+    print_bytes_fetched,
+    read_parquet_footer,
+)
+
+output_dir = Path(sys.argv[1])
+releases_by_tag = load_releases_by_tag(output_dir)
 
 # dataset label -> (release tag, file-name regex)
-SETS = {
+DATASET_PATTERNS = {
     "pbp": ("pbp", r"play_by_play_\d{4}\.parquet"),
     "pbp_participation": ("pbp_participation", r"pbp_participation_\d{4}\.parquet"),
     "stats_player_week": ("stats_player", r"stats_player_week_\d{4}\.parquet"),
@@ -43,33 +53,54 @@ SETS = {
     "espn_qbr": ("espn_data", r"qbr_(season|week)_level\.parquet"),
 }
 
-jobs = [(label, a) for label, (tag, rx) in SETS.items() for a in assets(L, tag, rx)]
-print("files to probe:", len(jobs))
+probe_jobs = [
+    (dataset_label, asset)
+    for dataset_label, (release_tag, filename_regex) in DATASET_PATTERNS.items()
+    for asset in find_release_assets(releases_by_tag, release_tag, filename_regex)
+]
+print("files to probe:", len(probe_jobs))
 
 
-def probe(job):
-    label, a = job
+def probe_asset_schema(job):
+    dataset_label, asset = job
     try:
-        md = read_footer(a["url"], a["size"])
-        sch = md.schema.to_arrow_schema()
-        kv = {k.decode(): (v.decode(errors="replace")[:200]) for k, v in (md.metadata or {}).items()
-              if k not in (b"ARROW:schema", b"r")}
-        return label, {"file": a["name"], "season": season_of(a["name"]),
-                       "updated_at": a["updated_at"], "rows": md.num_rows,
-                       "columns": [[f.name, str(f.type)] for f in sch], "kv": kv}
-    except Exception as e:
-        return label, {"file": a["name"], "season": season_of(a["name"]), "error": f"{type(e).__name__}: {e}"[:200]}
+        parquet_metadata = read_parquet_footer(asset["url"], asset["size"])
+        arrow_schema = parquet_metadata.schema.to_arrow_schema()
+        kv_metadata = {
+            meta_key.decode(): (meta_value.decode(errors="replace")[:200])
+            for meta_key, meta_value in (parquet_metadata.metadata or {}).items()
+            if meta_key not in (b"ARROW:schema", b"r")
+        }
+        return dataset_label, {
+            "file": asset["name"],
+            "season": extract_season_year(asset["name"]),
+            "updated_at": asset["updated_at"],
+            "rows": parquet_metadata.num_rows,
+            "columns": [[field.name, str(field.type)] for field in arrow_schema],
+            "kv": kv_metadata,
+        }
+    except Exception as error:
+        return dataset_label, {
+            "file": asset["name"],
+            "season": extract_season_year(asset["name"]),
+            "error": f"{type(error).__name__}: {error}"[:200],
+        }
 
 
-res = {}
-with cf.ThreadPoolExecutor(8) as ex:
-    for label, rec in ex.map(probe, jobs):
-        res.setdefault(label, []).append(rec)
-(out / "schemas.json").write_text(json.dumps(res, indent=1))
-errs = [(l, r["file"], r["error"]) for l, rs in res.items() for r in rs if "error" in r]
-print("ok:", sum(len(v) for v in res.values()) - len(errs), "errors:", len(errs))
-print_fetched()
-for e in errs:
-    print("  ", e)
-if errs or NO_FILES:
+schemas_by_dataset: dict[str, list[dict]] = {}
+with concurrent_futures.ThreadPoolExecutor(8) as executor:
+    for dataset_label, schema_record in executor.map(probe_asset_schema, probe_jobs):
+        schemas_by_dataset.setdefault(dataset_label, []).append(schema_record)
+(output_dir / "schemas.json").write_text(json.dumps(schemas_by_dataset, indent=1))
+failed_probes = [
+    (dataset_label, record["file"], record["error"])
+    for dataset_label, records in schemas_by_dataset.items()
+    for record in records
+    if "error" in record
+]
+print("ok:", sum(len(records) for records in schemas_by_dataset.values()) - len(failed_probes), "errors:", len(failed_probes))
+print_bytes_fetched()
+for failed_probe in failed_probes:
+    print("  ", failed_probe)
+if failed_probes or UNMATCHED_ASSET_PATTERNS:
     sys.exit(1)
