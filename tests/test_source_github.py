@@ -155,12 +155,12 @@ def test_complete_download_of_another_size_than_listed_is_left_to_the_run(monkey
     assert (tmp_path / "a.parquet").read_bytes() == b"PAR1" and len(requests) == 1
 
 
-def test_download_that_cannot_be_written_is_not_retried(monkeypatch, tmp_path):
+def test_download_to_a_folder_that_cannot_be_written_makes_no_request(monkeypatch, tmp_path):
     requests = stub_urlopen(monkeypatch, lambda attempt_number, request: io.BytesIO(SAMPLE_PARQUET_BYTES))
 
     with pytest.raises(SourceError):
         GitHubReleasesSource("o/r", backoff_seconds=0).fetch(SAMPLE_ASSET, tmp_path / "no_such_folder" / "a.parquet")
-    assert len(requests) == 1
+    assert requests == []  # a local problem, so nothing is downloaded or retried
 
 
 def test_cli_lists_the_catalog_repo_on_github_with_the_token_when_no_source_folder_is_set(monkeypatch, tmp_path):

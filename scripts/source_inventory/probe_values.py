@@ -479,7 +479,7 @@ for check_fn in (
 ):
     try:
         check_fn()
-    except Exception:
+    except Exception:  # noqa: BLE001 - a check that fails is reported and the other checks still run
         traceback.print_exc(limit=2)
         failed_checks.append(check_fn.__name__)
 print_bytes_fetched()

@@ -95,7 +95,7 @@ def check_one_asset(job):
                 round(frame["offense_personnel"].is_not_null().mean(), 3),
             )
         return dataset_label, season_report
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - one unreadable file is reported and the rest are still checked
         return dataset_label, {"season": season, "error": f"{type(error).__name__}: {error}"[:160]}
 
 

@@ -2,8 +2,6 @@
 import polars as pl
 import pytest
 import yaml
-from typer.testing import CliRunner
-
 from conftest import (
     GAMES_DATASET_SPEC,
     STATS_DATASET_SPEC,
@@ -12,6 +10,8 @@ from conftest import (
     build_catalog,
     make_stats_frame,
 )
+from typer.testing import CliRunner
+
 from nfl_lake.cli import app
 
 cli_runner = CliRunner()

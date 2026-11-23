@@ -12,10 +12,11 @@ import shutil
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Protocol, TypeVar
+from typing import Protocol, TypeVar
 
 from .store import format_utc_iso
 
@@ -98,7 +99,7 @@ class GitHubReleasesSource:
             if http_error.code in (403, 429) and http_error.headers.get("X-RateLimit-Remaining") == "0":
                 reset_epoch = http_error.headers.get("X-RateLimit-Reset")
                 reset_time_utc = (
-                    datetime.fromtimestamp(int(reset_epoch), timezone.utc).strftime("%H:%M UTC")
+                    datetime.fromtimestamp(int(reset_epoch), UTC).strftime("%H:%M UTC")
                     if reset_epoch else "later"
                 )
                 raise SourceError(
@@ -118,7 +119,7 @@ class GitHubReleasesSource:
         while True:
             page_url = f"https://api.github.com/repos/{self.repo}/releases?per_page=100&page={page}"
 
-            def read_release_page() -> list[dict]:
+            def read_release_page(page_url: str = page_url) -> list[dict]:
                 with self._open_request(urllib.request.Request(page_url, headers=headers), operation) as response:
                     return json.load(response)
 
@@ -144,24 +145,18 @@ class GitHubReleasesSource:
         # No token here: the download is public and redirects to another host.
         request = urllib.request.Request(asset.download_url, headers={"User-Agent": USER_AGENT})
         operation = f"downloading {asset.filename}"
+        try:
+            Path(dest_path).touch()
+        except OSError as error:  # a local problem, which trying the download again would not fix
+            raise SourceError(f"cannot write {dest_path}: {error}") from error
 
         def download_once() -> None:
-            with self._open_request(request, operation) as response:
+            with self._open_request(request, operation) as response, open(dest_path, "wb") as output_file:
                 # What this response says it will send. The listing can describe an earlier file of another size.
                 declared_length = getattr(response, "headers", {}).get("Content-Length")
-                expected_bytes = int(declared_length) if declared_length else asset.size_bytes
-                received_bytes = 0
-                try:
-                    output_file = open(dest_path, "wb")
-                except OSError as error:  # a local problem: trying the download again would not help
-                    raise SourceError(f"cannot write {dest_path}: {error}") from error
-                with output_file:
-                    while chunk := response.read(DOWNLOAD_CHUNK_BYTES):
-                        received_bytes += len(chunk)
-                        try:
-                            output_file.write(chunk)
-                        except OSError as error:
-                            raise SourceError(f"cannot write {dest_path}: {error}") from error
+                shutil.copyfileobj(response, output_file, DOWNLOAD_CHUNK_BYTES)
+                received_bytes = output_file.tell()
+            expected_bytes = int(declared_length) if declared_length else asset.size_bytes
             if received_bytes < expected_bytes:  # http.client returns a body that ended early without raising
                 raise OSError(f"body ended after {received_bytes} of {expected_bytes} bytes")
 
@@ -184,7 +179,7 @@ class LocalDirSource:
             assets_by_filename = listing.setdefault(release_dir.name, {})
             for file_path in sorted(path for path in release_dir.iterdir() if path.is_file()):
                 file_stat = file_path.stat()
-                updated_at = format_utc_iso(datetime.fromtimestamp(file_stat.st_mtime, timezone.utc))
+                updated_at = format_utc_iso(datetime.fromtimestamp(file_stat.st_mtime, UTC))
                 assets_by_filename[file_path.name] = UpstreamAsset(
                     release_tag=release_dir.name,
                     filename=file_path.name,

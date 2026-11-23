@@ -27,6 +27,8 @@ uv run pytest
 
 `uv sync` creates `.venv` from `uv.lock`, and downloads the Python version named in `.python-version` if you do not have it. No test touches the network.
 
+Before a commit, `uv run ruff format` lays the code out and `uv run ruff check` looks for mistakes.
+
 ## Ingest
 
 ```

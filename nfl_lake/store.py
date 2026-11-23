@@ -14,10 +14,10 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
 
 
 class LakeLocked(RuntimeError):
@@ -25,11 +25,11 @@ class LakeLocked(RuntimeError):
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def format_utc_iso(timestamp: datetime) -> str:
-    return timestamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return timestamp.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class LakeStore:

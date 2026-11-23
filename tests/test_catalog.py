@@ -1,9 +1,9 @@
 from pathlib import Path
 
 import pytest
+from conftest import STATS_DATASET_SPEC, build_catalog
 from pydantic import ValidationError
 
-from conftest import STATS_DATASET_SPEC, build_catalog
 from nfl_lake.catalog import load_catalog
 
 SINGLE_FILE_SPEC = {"release": "r", "file": "f.parquet", "key": ["a"]}

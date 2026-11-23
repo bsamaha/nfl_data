@@ -14,7 +14,7 @@ import pyarrow.parquet as pq
 # The probes count key problems with the function ingest uses, so the two cannot disagree about what a
 # duplicate is. The scripts are run by path, so the repo root is put on the import path here.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from nfl_lake.contract import count_key_violations  # noqa: E402, F401
+from nfl_lake.contract import count_key_violations  # noqa: F401
 
 USER_AGENT_HEADERS = {"User-Agent": "source-inventory"}
 SEASON_YEAR_PATTERN = re.compile(r"(?<!\d)(19\d\d|20\d\d)(?!\d)")

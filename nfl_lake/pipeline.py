@@ -271,7 +271,7 @@ def _fetch_targets(
             except ListingMismatch as mismatch:
                 mismatched.append((target, str(mismatch)))
                 logger.warning("listing_mismatch", file=target.file_id, detail=str(mismatch))
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - whatever stops one file is reported and the others go on
                 errors.append(f"{target.file_id}: {error}")
                 logger.error("fetch_failed", file=target.file_id, error=str(error))
             else:

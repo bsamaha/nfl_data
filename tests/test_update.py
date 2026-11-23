@@ -5,8 +5,6 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from polars.testing import assert_frame_equal
-
 from conftest import (
     GAMES_DATASET_SPEC,
     GAMES_FILE_ID,
@@ -16,6 +14,8 @@ from conftest import (
     build_catalog,
     make_stats_frame,
 )
+from polars.testing import assert_frame_equal
+
 from nfl_lake.pipeline import UpdateFailed, run_update, verify_lake
 from nfl_lake.source import LocalDirSource
 from nfl_lake.store import LakeLocked
@@ -399,9 +399,8 @@ def test_seasons_before_min_season_or_outside_the_filter_are_not_built(upstream,
 
 def test_second_update_cannot_start_while_one_holds_the_lock(upstream, lake):
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
-    with lake.acquire_lock():
-        with pytest.raises(LakeLocked):
-            run_update(build_catalog(stats=STATS_DATASET_SPEC), upstream.source, lake)
+    with lake.acquire_lock(), pytest.raises(LakeLocked):
+        run_update(build_catalog(stats=STATS_DATASET_SPEC), upstream.source, lake)
     run_update(build_catalog(stats=STATS_DATASET_SPEC), upstream.source, lake)  # released on exit
 
 

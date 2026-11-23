@@ -79,7 +79,7 @@ def probe_asset_schema(job):
             "columns": [[field.name, str(field.type)] for field in arrow_schema],
             "kv": kv_metadata,
         }
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - one unreadable file is reported and the rest are still read
         return dataset_label, {
             "file": asset["name"],
             "season": extract_season_year(asset["name"]),

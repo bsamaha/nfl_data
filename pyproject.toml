@@ -21,7 +21,12 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9",
+    "ruff>=0.17.6",
 ]
+
+[tool.ruff]
+# `uv run ruff format` owns the layout. `uv run ruff check` looks for mistakes.
+line-length = 120
 
 [tool.uv]
 # The code is run from the repo root as `python -m nfl_lake`; it is not an installable package.
