@@ -38,6 +38,7 @@ def make_cli(tmp_path, upstream, lake, monkeypatch, capsys):
         catalog_path.write_text(yaml.safe_dump(build_catalog(**datasets).model_dump(mode="json")))
         monkeypatch.setenv("NFL_LAKE_ROOT", str(lake.root_dir))
         monkeypatch.setenv("NFL_LAKE_SOURCE_DIR", str(upstream.root_dir))
+        monkeypatch.delenv("LOG_LEVEL", raising=False)  # the developer's own setting must not decide a test
 
         def invoke(*args: str) -> CliResult:
             capsys.readouterr()
@@ -106,6 +107,8 @@ def test_failed_update_exits_1_and_status_still_exits_0(cli, upstream, lake):
 def test_bad_arguments_are_refused(cli, upstream, lake):
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
     invalid_invocations = [
+        (),
+        ("update", "--dry"),
         ("update", "--seasons", "last-year"),
         ("update", "--seasons", "2025-2024"),
         ("update", "--seasons", ","),
@@ -114,7 +117,8 @@ def test_bad_arguments_are_refused(cli, upstream, lake):
         ("update", "--workers", "0"),
         ("verify", "--datasets", ","),
     ]
-    for args in invalid_invocations:  # not a season, a reversed range, out-of-range workers, and empty options
+    # no command, a shortened option, not a season, a reversed range, out-of-range workers, and empty options
+    for args in invalid_invocations:
         result = cli(*args)
         assert command_refused(result, exit_code=2), (args, result.output)
 

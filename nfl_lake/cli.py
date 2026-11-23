@@ -7,9 +7,8 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from pathlib import Path
 from typing import NoReturn
 
 import yaml
@@ -30,23 +29,6 @@ class _CurrentStderrHandler(logging.StreamHandler):
     @stream.setter
     def stream(self, value) -> None:
         pass  # StreamHandler.__init__ assigns one; there is nothing to keep
-
-
-def _load_dotenv(env_path: Path = Path(".env")) -> None:
-    """Load key=value pairs from `.env` if present, without overwriting existing environment variables."""
-    if not env_path.is_file():
-        return
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.removeprefix("export ").strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        if key:
-            os.environ.setdefault(key, value)
 
 
 def _configure_logging() -> None:
@@ -230,16 +212,26 @@ def _cmd_unlock(args: argparse.Namespace) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    # Option names must be written in full: a shortened one would change meaning when a new option is added.
     parser = argparse.ArgumentParser(
         prog="python -m nfl_lake",
         description="Ingest nflverse files into the local lake.",
+        allow_abbrev=False,
     )
     parser.add_argument("--catalog", default="catalog/datasets.yml", help="Path to the dataset catalog.")
-    subparsers = parser.add_subparsers(dest="command")
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
-    update_parser = subparsers.add_parser(
+    def add_command(
+        name: str, handler: Callable[[argparse.Namespace], None], help_text: str
+    ) -> argparse.ArgumentParser:
+        command_parser = subparsers.add_parser(name, help=help_text, allow_abbrev=False)
+        command_parser.set_defaults(handler=handler)
+        return command_parser
+
+    update_parser = add_command(
         "update",
-        help="Fetch what changed upstream, rebuild the clean layer, and publish only if every file passed.",
+        _cmd_update,
+        "Fetch what changed upstream, rebuild the clean layer, and publish only if every file passed.",
     )
     update_parser.add_argument(
         "--datasets", type=_parse_dataset_names, help="Comma-separated dataset names. Default: every dataset."
@@ -265,39 +257,29 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Show what would be fetched and rebuilt, and change nothing.",
     )
     update_parser.add_argument("--workers", type=_parse_workers, default=4, help="Parallel downloads (1-16).")
-    update_parser.set_defaults(handler=_cmd_update)
 
-    status_parser = subparsers.add_parser(
-        "status", help="Show what is published per dataset, and how the last run ended."
-    )
-    status_parser.set_defaults(handler=_cmd_status)
+    add_command("status", _cmd_status, "Show what is published per dataset, and how the last run ended.")
 
-    verify_parser = subparsers.add_parser(
-        "verify", help="Re-check every published file: present, expected row count, key unique and non-null."
+    verify_parser = add_command(
+        "verify", _cmd_verify, "Re-check every published file: present, expected row count, key unique and non-null."
     )
     verify_parser.add_argument(
         "--datasets", type=_parse_dataset_names, help="Comma-separated dataset names. Default: every dataset."
     )
     verify_parser.add_argument(
-        "--deep", action="store_true", help="Also re-hash every clean file and retained raw snapshot."
+        "--deep", action="store_true", help="Also re-hash every clean file and every raw snapshot."
     )
-    verify_parser.set_defaults(handler=_cmd_verify)
 
-    unlock_parser = subparsers.add_parser(
-        "unlock", help="Clear the lock left behind by an update that was killed. Only use when no update is running."
+    add_command(
+        "unlock",
+        _cmd_unlock,
+        "Clear the lock left behind by an update that was killed. Only use when no update is running.",
     )
-    unlock_parser.set_defaults(handler=_cmd_unlock)
-
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-    if args.command is None:
-        parser.print_help()
-        return
-    _load_dotenv()
+    args = _build_parser().parse_args(argv)
     _configure_logging()
     with _handle_cli_errors():
         args.handler(args)

@@ -35,7 +35,7 @@ The file listing comes from the GitHub releases API. Schemas come from the Parqu
 | FTN charting | `ftn_charting/ftn_charting_{Y}.parquet` | 2022–2026 | 42k–48k | `nflverse_game_id, nflverse_play_id` |
 | PFR advanced, weekly | `pfr_advstats/advstats_week_{pass,rush,rec,def}_{Y}.parquet` | 2018–2026 | 0.7k–8k | `game_id, pfr_player_id` |
 
-All URLs have the form `https://github.com/nflverse/nflverse-data/releases/download/{release}/{file}`. Every file also carries its upstream build time in the Parquet metadata key `nflverse_timestamp`, which ingest records as `upstream_built_at` in `data/manifest/raw_files.jsonl`.
+All URLs have the form `https://github.com/nflverse/nflverse-data/releases/download/{release}/{file}`. Every file also carries its upstream build time in the Parquet metadata key `nflverse_timestamp`, which ingest records as `upstream_built_at` in `data/manifest/clean_state.json`.
 
 ## Core sources
 

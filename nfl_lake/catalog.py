@@ -104,7 +104,7 @@ class Catalog(_StrictModel):
             raise ValueError(f"not in the catalog: {', '.join(unknown_names)}")
 
     def get_dataset(self, dataset_name: str) -> Dataset:
-        return Dataset.model_construct(name=dataset_name, **self.datasets[dataset_name].__dict__)
+        return Dataset(name=dataset_name, **self.datasets[dataset_name].model_dump())
 
     def select_datasets(
         self,

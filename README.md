@@ -35,7 +35,7 @@ Before a commit, `uv run ruff format` lays the code out and `uv run ruff check` 
 uv run python -m nfl_lake update
 ```
 
-The first run downloads every file in the catalog, about 600 MB as of November 2026; `update --dry-run` prints the current file count and size. Later runs compare the checksum GitHub publishes for each file with the copy on disk and download only what changed.
+The first run downloads every file in the catalog, about 600 MB as of November 2026; `update --dry-run` prints the current file count and size. Later runs compare the checksum GitHub publishes for each file with the one recorded when it was last published, and download only what changed.
 
 | Command | What it does |
 |---|---|
@@ -45,7 +45,7 @@ The first run downloads every file in the catalog, about 600 MB as of November 2
 | `update --datasets pbp,schedules` | Limit the run to these datasets |
 | `update --skip weekly_rosters` | Leave datasets out, so one that is broken upstream does not hold back the rest |
 | `status` | What is published per dataset, and how the last run ended |
-| `verify` | Re-check every published file against its key; `--deep` also re-hashes clean files and retained raw snapshots |
+| `verify` | Re-check every published file against its key; `--deep` also re-hashes clean files and every raw snapshot |
 | `unlock` | Clear the lock left by an update that was killed |
 
 `update` and `verify` exit non-zero when they find a problem. `status` only reports: it exits 0 even when the last run failed. `--help` on any command lists its options.
@@ -71,7 +71,7 @@ Everything is under `data/`, which git ignores. Set `NFL_LAKE_ROOT` to put it el
 | `data/manifest/clean_state.json` | Which upstream file, checksums and contract each clean file was built from |
 | `data/manifest/runs.jsonl` | One line per run: status, errors, counts |
 
-Datasets marked `history: all` in `catalog/datasets.yml` keep every raw snapshot on disk; the rest keep only the clean file.
+Datasets marked `history: all` in `catalog/datasets.yml` keep every raw snapshot on disk; the rest keep only the clean file. A download is kept only when its run publishes, so a run that fails fetches the same files again next time, and a changed rule on a dataset with no raw snapshot fetches its files again to rebuild them.
 
 ### Querying
 
@@ -105,7 +105,7 @@ Join games on `game_id`, not on team codes; `docs/SOURCE_INVENTORY.md` explains 
 | `NFL_LAKE_SOURCE_DIR` | Read files from a local folder of `<release>/<file>` instead of GitHub |
 | `LOG_LEVEL` | Progress detail on stderr. Default: `INFO` |
 
-A `.env` file in the repo root is read if present.
+To keep these in a file, let uv read it: `uv run --env-file .env python -m nfl_lake update`.
 
 ## Scheduling
 

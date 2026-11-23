@@ -7,7 +7,8 @@
 #   file              file name; {season} marks one file per season
 #   min_season        first season to ingest (required with {season})
 #   key               columns that identify a row; must be unique and non-null in the clean layer
-#   history           latest (default, clean file only) or all (also keep every raw snapshot)
+#   history           latest (default, clean file only) or all (also keep every raw snapshot). Changing all to
+#                     latest stops new snapshots; the ones already under raw/<dataset>/ stay until you delete them.
 #   reject_null_keys  set aside rows whose key is null or empty instead of failing the run
 #   keep_last_by      when a key repeats, keep the row with the highest value of this column
 #   max_row_drop      fail if a rebuilt file loses more than this share of rows (default 0.02)
@@ -79,7 +80,7 @@ datasets:
     keep_last_by: date_modified
     history: all
 
-  # Timestamped snapshots, 2025 on. The file itself holds every snapshot, so one raw version is enough.
+  # Timestamped snapshots, 2025 on. The file itself holds every snapshot, so no raw history is kept.
   # The week-based files for 2001-2024 have no unique key and are not ingested.
   depth_charts:
     release: depth_charts

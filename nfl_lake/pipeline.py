@@ -355,10 +355,11 @@ def _build_one_target(
     try:
         raw_frame = pl.read_parquet(source_raw_path)
     except UNREADABLE_PARQUET_ERRORS as error:
-        raise ContractError(
-            f"raw file {source_raw_path} cannot be read ({type(error).__name__}); "
-            "delete it and run update to fetch it again"
-        ) from error
+        if fetched is not None:  # it matched the listing, so fetching again would bring the same file
+            advice = "the downloaded file cannot be read; skip the dataset with --skip until upstream replaces it"
+        else:
+            advice = f"raw file {source_raw_path} cannot be read; delete it and run update to fetch it again"
+        raise ContractError(f"{advice} ({type(error).__name__})") from error
 
     build_result = build_clean(raw_frame, target.dataset, previous_clean_state, accept_schema_change)
     staged_clean_path = staging_dir / "clean" / target.dataset.name / target.asset.filename
@@ -572,7 +573,8 @@ def verify_lake(
     dataset_names: list[str] | None = None,
     deep: bool = False,
 ) -> VerificationResult:
-    """Re-check every published clean file against its contract, and with `deep` re-hash clean and raw files."""
+    """Re-check every published clean file against its contract, and with `deep` re-hash clean files and every raw
+    snapshot of the selected datasets."""
     clean_state = lake.load_clean_state()
     selected_datasets_by_name = {dataset.name: dataset for dataset in catalog.select_datasets(dataset_names)}
     checked_file_count = 0
@@ -611,14 +613,15 @@ def verify_lake(
                     )
             if deep and compute_file_sha256(clean_path) != published_entry["clean_sha256"]:
                 errors.append(f"{file_id}: clean file no longer matches its recorded checksum")
-        if deep and published_entry.get("raw_path"):
-            raw_path = lake.root_dir / published_entry["raw_path"]
-            if not raw_path.exists():
-                errors.append(f"{file_id}: raw file {published_entry['raw_path']} is missing")
-            elif compute_file_sha256(raw_path) != published_entry["raw_sha256"]:
-                errors.append(
-                    f"{file_id}: raw file {published_entry['raw_path']} no longer matches its recorded checksum"
-                )
+        if deep and published_entry.get("raw_path") and not _has_stored_raw(published_entry, lake):
+            errors.append(f"{file_id}: raw file {published_entry['raw_path']} is missing")
+    if deep:  # a raw snapshot is named after its own checksum, so every one is checked, not only the newest
+        for dataset_name in selected_datasets_by_name:
+            for raw_path in sorted((lake.raw_dir / dataset_name).glob("*/*")):
+                if not raw_path.stem.endswith(compute_file_sha256(raw_path)[:12]):
+                    errors.append(
+                        f"raw file {lake.relative_posix_path(raw_path)} no longer matches the checksum in its name"
+                    )
     return VerificationResult(checked_file_count=checked_file_count, errors=errors)
 
 

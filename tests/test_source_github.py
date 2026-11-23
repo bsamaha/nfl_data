@@ -198,7 +198,7 @@ def test_cli_lists_the_catalog_repo_on_github_with_the_token_when_no_source_fold
         )
     )
     monkeypatch.setenv("NFL_LAKE_ROOT", str(tmp_path / "lake"))
-    monkeypatch.setenv("NFL_LAKE_SOURCE_DIR", "")  # empty, not unset, so a developer's .env cannot fill it in
+    monkeypatch.delenv("NFL_LAKE_SOURCE_DIR", raising=False)
     monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
     requests = stub_urlopen(
         monkeypatch,

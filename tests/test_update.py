@@ -77,10 +77,9 @@ def test_correction_replaces_the_clean_file_and_history_decides_which_raw_versio
 
     assert published_targets(lake) == 10 and read_clean_frame(lake).height == 2  # replaced whole, not appended
     assert stored_raw_paths(lake, "stats", STATS_FILENAME) == []  # latest keeps no raw copy
-    games_raw_paths = stored_raw_paths(lake, "games", "games.parquet")
-    assert len(games_raw_paths) == 2
-    assert [path.read_bytes() for path in games_raw_paths] == [first_games_bytes, second_games_upstream.read_bytes()]
-    assert [pl.read_parquet(path)["spread_line"].item() for path in games_raw_paths] == [3.0, 2.5]
+    # Both versions are kept byte for byte. A set, because snapshots stored in the same second sort by checksum.
+    games_raw_bytes = {path.read_bytes() for path in stored_raw_paths(lake, "games", "games.parquet")}
+    assert games_raw_bytes == {first_games_bytes, second_games_upstream.read_bytes()}
 
 
 def test_bad_file_fails_the_run_and_keeps_the_published_version(upstream, lake):
@@ -445,8 +444,9 @@ def test_changing_a_dataset_rule_rebuilds_from_raw_when_kept_and_refetches_other
 
 def test_verify_notices_damage_to_published_files(upstream, lake):
     catalog = build_catalog(stats={**STATS_DATASET_SPEC, "history": "all"})
-    upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
-    run_update(catalog, upstream.source, lake)
+    for targets in (5, 8):  # two versions, so two raw snapshots
+        upstream.put("stats_player", STATS_FILENAME, make_stats_frame(targets))
+        run_update(catalog, upstream.source, lake)
     assert verify_lake(catalog, lake, deep=True) == (1, [])
 
     clean_file_path = lake.clean_file_path("stats", STATS_FILENAME)
@@ -469,11 +469,15 @@ def test_verify_notices_damage_to_published_files(upstream, lake):
     assert verify_lake(catalog, lake) == (1, []) and verify_lake(catalog, lake, deep=True).errors != []
 
     clean_file_path.write_bytes(valid_clean_bytes)
-    (raw_file_path,) = stored_raw_paths(lake)
-    raw_file_path.write_bytes(b"tampered")  # only a deep check reads raw files
-    assert verify_lake(catalog, lake) == (1, []) and verify_lake(catalog, lake, deep=True).errors != []
-    raw_file_path.unlink()
-    assert verify_lake(catalog, lake, deep=True).errors != []
+    for raw_file_path in stored_raw_paths(lake):  # only a deep check reads raw files, and it reads every snapshot
+        intact_raw_bytes = raw_file_path.read_bytes()
+        raw_file_path.write_bytes(b"tampered")
+        assert verify_lake(catalog, lake) == (1, []) and verify_lake(catalog, lake, deep=True).errors != []
+        raw_file_path.write_bytes(intact_raw_bytes)
+    assert verify_lake(catalog, lake, deep=True) == (1, [])
+    for raw_file_path in stored_raw_paths(lake):
+        raw_file_path.unlink()
+    assert verify_lake(catalog, lake, deep=True).errors != []  # the snapshot the clean file was built from is gone
 
 
 def test_verify_notices_a_changed_contract_and_a_dataset_dropped_from_the_catalog(upstream, lake):
