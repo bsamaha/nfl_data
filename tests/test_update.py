@@ -1,4 +1,5 @@
 """What an update run guarantees, checked against a fake upstream folder."""
+
 import dataclasses
 import os
 from pathlib import Path
@@ -83,7 +84,9 @@ def test_bad_file_fails_the_run_and_keeps_the_published_version(upstream, lake):
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame(8))
     run_update(catalog, upstream.source, lake)
 
-    upstream.put("stats_player", STATS_FILENAME, pl.concat([make_stats_frame(10), make_stats_frame(11)]))  # duplicate keys
+    upstream.put(
+        "stats_player", STATS_FILENAME, pl.concat([make_stats_frame(10), make_stats_frame(11)])
+    )  # duplicate keys
     with pytest.raises(UpdateFailed) as failure:
         run_update(catalog, upstream.source, lake)
 
@@ -104,8 +107,8 @@ def test_one_bad_file_blocks_every_publish_in_the_run(upstream, lake):
     upstream.put("schedules", "games.parquet", make_games_frame("g1"))
     run_update(catalog, upstream.source, lake)
 
-    upstream.put("stats_player", STATS_FILENAME, make_stats_frame(10))       # a good change
-    upstream.put("schedules", "games.parquet", make_games_frame("g1", "g1")) # a bad one
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame(10))  # a good change
+    upstream.put("schedules", "games.parquet", make_games_frame("g1", "g1"))  # a bad one
     with pytest.raises(UpdateFailed):
         run_update(catalog, upstream.source, lake)
     assert published_targets(lake) == 8
@@ -168,12 +171,14 @@ def test_keep_last_by_resolves_a_repeated_key(upstream, lake):
         "key": ["week", "gsis_id"],
         "keep_last_by": "date_modified",
     }
-    injuries_frame = pl.DataFrame({
-        "week": [15, 15, 15],
-        "gsis_id": ["a", "a", "b"],
-        "report_status": ["Out", "Questionable", "Out"],
-        "date_modified": ["2024-12-15T14:17", "2024-12-15T03:34", "2024-12-14T20:00"],
-    })
+    injuries_frame = pl.DataFrame(
+        {
+            "week": [15, 15, 15],
+            "gsis_id": ["a", "a", "b"],
+            "report_status": ["Out", "Questionable", "Out"],
+            "date_modified": ["2024-12-15T14:17", "2024-12-15T03:34", "2024-12-14T20:00"],
+        }
+    )
     upstream.put("injuries", "injuries_2024.parquet", injuries_frame)
     summary = run_update(build_catalog(injuries=injuries_spec), upstream.source, lake)
 
@@ -189,10 +194,12 @@ def test_keep_last_by_resolves_a_repeated_key(upstream, lake):
 
 def test_file_that_lost_more_rows_than_the_limit_is_refused(upstream, lake):
     catalog = build_catalog(stats=STATS_DATASET_SPEC)
-    make_rows = lambda row_count: pl.DataFrame({
-        "player_id": [f"p{index:03}" for index in range(row_count)],
-        "game_id": ["g1"] * row_count,
-    })
+    make_rows = lambda row_count: pl.DataFrame(
+        {
+            "player_id": [f"p{index:03}" for index in range(row_count)],
+            "game_id": ["g1"] * row_count,
+        }
+    )
     upstream.put("stats_player", STATS_FILENAME, make_rows(100))
     run_update(catalog, upstream.source, lake)
 
@@ -287,8 +294,7 @@ class NoChecksumsSource(LocalDirSource):
     def list_assets(self):
         return {
             release_tag: {
-                filename: dataclasses.replace(asset, sha256=None)
-                for filename, asset in release_assets.items()
+                filename: dataclasses.replace(asset, sha256=None) for filename, asset in release_assets.items()
             }
             for release_tag, release_assets in super().list_assets().items()
         }
@@ -359,7 +365,9 @@ def test_without_an_upstream_checksum_size_and_update_time_decide_what_is_fetche
     run_update(catalog, source, lake)
     assert run_update(catalog, source, lake).fetched_file_ids == []
 
-    expanded_frame = pl.concat([make_stats_frame(), make_stats_frame().with_columns(pl.lit("2024_02_BUF_NYJ").alias("game_id"))])
+    expanded_frame = pl.concat(
+        [make_stats_frame(), make_stats_frame().with_columns(pl.lit("2024_02_BUF_NYJ").alias("game_id"))]
+    )
     upstream_file_path = upstream.put("stats_player", STATS_FILENAME, expanded_frame)  # a different size
     assert run_update(catalog, source, lake).fetched_file_ids == [STATS_FILE_ID]
 
@@ -425,8 +433,8 @@ def test_verify_notices_damage_to_published_files(upstream, lake):
     clean_file_path = lake.clean_file_path("stats", STATS_FILENAME)
     valid_clean_bytes = clean_file_path.read_bytes()
     damaged_frames = [
-        make_stats_frame().with_columns(pl.lit("00-001").alias("player_id")),         # the two rows share a key
-        make_stats_frame().with_columns(pl.Series("player_id", ["00-002", ""])),      # an empty id is a missing id
+        make_stats_frame().with_columns(pl.lit("00-001").alias("player_id")),  # the two rows share a key
+        make_stats_frame().with_columns(pl.Series("player_id", ["00-002", ""])),  # an empty id is a missing id
         pl.concat([make_stats_frame(), make_stats_frame().with_columns(pl.lit("g2").alias("game_id"))]),  # extra rows
     ]
     for damaged_frame in damaged_frames:

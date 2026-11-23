@@ -5,6 +5,7 @@ Uses one unauthenticated API call.
 
 Usage: python list_releases.py OUT_DIR
 """
+
 import collections
 import json
 import sys
@@ -30,18 +31,20 @@ print("releases:", len(releases), "| api calls left this hour:", rate_limit_rema
 
 slim_releases = []
 for release in releases:
-    slim_releases.append({
-        "tag": release["tag_name"],
-        "assets": [
-            {
-                "name": asset["name"],
-                "size": asset["size"],
-                "updated_at": asset["updated_at"],
-                "url": asset["browser_download_url"],
-            }
-            for asset in release.get("assets", [])
-        ],
-    })
+    slim_releases.append(
+        {
+            "tag": release["tag_name"],
+            "assets": [
+                {
+                    "name": asset["name"],
+                    "size": asset["size"],
+                    "updated_at": asset["updated_at"],
+                    "url": asset["browser_download_url"],
+                }
+                for asset in release.get("assets", [])
+            ],
+        }
+    )
 (output_dir / "releases.json").write_text(json.dumps(slim_releases, indent=1))
 
 for release in sorted(slim_releases, key=lambda item: item["tag"]):
@@ -52,6 +55,8 @@ for release in sorted(slim_releases, key=lambda item: item["tag"]):
     latest_update = max((asset["updated_at"] for asset in release_assets), default="-")
     parquet_megabytes = sum(asset["size"] for asset in parquet_assets) / 1e6
     filename_patterns = collections.Counter(SEASON_YEAR_PATTERN.sub("{Y}", asset["name"]) for asset in parquet_assets)
-    print(f"\n[{release['tag']}] assets={len(release_assets)} ext={dict(extension_counts)} parquet_MB={parquet_megabytes:.1f} latest_update={latest_update}")
+    print(
+        f"\n[{release['tag']}] assets={len(release_assets)} ext={dict(extension_counts)} parquet_MB={parquet_megabytes:.1f} latest_update={latest_update}"
+    )
     print(f"   seasons: {seasons[0]}-{seasons[-1]} ({len(seasons)})" if seasons else "   seasons: (no year in names)")
     print("   parquet patterns:", dict(filename_patterns.most_common(8)))

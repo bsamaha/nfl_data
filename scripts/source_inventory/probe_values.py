@@ -6,6 +6,7 @@ Run list_releases.py first.
 
 Usage: python probe_values.py OUT_DIR
 """
+
 import json
 import re
 import sys
@@ -36,13 +37,17 @@ def latest_season_for_pattern(release_tag, filename_regex):
     return max(seasons)
 
 
-CURRENT_SEASON = latest_season_for_pattern("stats_player", r"stats_player_week_\d{4}\.parquet")  # in progress or just finished
-PREVIOUS_SEASON = CURRENT_SEASON - 1                                                             # last complete season
+CURRENT_SEASON = latest_season_for_pattern(
+    "stats_player", r"stats_player_week_\d{4}\.parquet"
+)  # in progress or just finished
+PREVIOUS_SEASON = CURRENT_SEASON - 1  # last complete season
 LATEST_PARTICIPATION_SEASON = latest_season_for_pattern("pbp_participation", r"pbp_participation_\d{4}\.parquet")
 PRE_RELOCATION_SEASONS = (2015, 2019)  # seasons before Rams, Chargers and Raiders moves settled, for team-code checks
-LAST_OLD_LAYOUT_SEASON = 2024          # final season before 2025 layout changes: week-based depth charts, injuries.date_modified
+LAST_OLD_LAYOUT_SEASON = (
+    2024  # final season before 2025 layout changes: week-based depth charts, injuries.date_modified
+)
 MODERN_GSIS_ID_PATTERN = r"^00-00\d{5}$"
-CACHED_FRAMES: dict[str, pl.DataFrame] = {}             # frames reused by later cross-dataset checks
+CACHED_FRAMES: dict[str, pl.DataFrame] = {}  # frames reused by later cross-dataset checks
 TEAM_CODES_BY_DATASET_SEASON: dict[tuple[str, int], set[str]] = {}
 print(
     f"current season={CURRENT_SEASON} previous={PREVIOUS_SEASON} "
@@ -84,7 +89,9 @@ def check_schedules():
     print_section("schedules (games.parquet)")
     frame = fetch_dataset_frame("schedules", "games.parquet")
     print_key_summary(frame, ["game_id"])
-    print("   seasons:", frame["season"].min(), "-", frame["season"].max(), "|", format_value_counts(frame, "game_type"))
+    print(
+        "   seasons:", frame["season"].min(), "-", frame["season"].max(), "|", format_value_counts(frame, "game_type")
+    )
     print(
         "   " + format_value_counts(frame, "weekday"),
         "|",
@@ -102,13 +109,17 @@ def check_schedules():
         "sample:",
         frame.select("game_id", "gameday", "gametime").tail(1).rows(),
     )
-    coverage_by_season = frame.group_by("season").agg(
-        pl.len().alias("games"),
-        pl.col("spread_line").is_not_null().sum().alias("spread"),
-        pl.col("total_line").is_not_null().sum().alias("total"),
-        pl.col("temp").is_not_null().sum().alias("temp"),
-        pl.col("result").is_null().sum().alias("unplayed"),
-    ).sort("season")
+    coverage_by_season = (
+        frame.group_by("season")
+        .agg(
+            pl.len().alias("games"),
+            pl.col("spread_line").is_not_null().sum().alias("spread"),
+            pl.col("total_line").is_not_null().sum().alias("total"),
+            pl.col("temp").is_not_null().sum().alias("temp"),
+            pl.col("result").is_null().sum().alias("unplayed"),
+        )
+        .sort("season")
+    )
     print(
         "   per season (games, spread, total, temp, unplayed) first 2 and last 3:",
         coverage_by_season.head(2).rows(),
@@ -122,7 +133,9 @@ def check_schedules():
         f"weeks {unplayed_games['week'].min()}-{unplayed_games['week'].max()}"
     )
     for season in (*PRE_RELOCATION_SEASONS, PREVIOUS_SEASON):
-        TEAM_CODES_BY_DATASET_SEASON[("schedules", season)] = set(frame.filter(pl.col("season") == season)["home_team"].unique())
+        TEAM_CODES_BY_DATASET_SEASON[("schedules", season)] = set(
+            frame.filter(pl.col("season") == season)["home_team"].unique()
+        )
     print("   all team codes:", sorted(set(frame["home_team"].unique()) | set(frame["away_team"].unique())))
     print(
         "   id columns non-null share:",
@@ -136,8 +149,15 @@ def check_schedules():
 def check_stats_player():
     print_section("stats_player_week")
     selected_columns = [
-        "player_id", "player_display_name", "season", "week", "season_type",
-        "game_id", "team", "position", "position_group",
+        "player_id",
+        "player_display_name",
+        "season",
+        "week",
+        "season_type",
+        "game_id",
+        "team",
+        "position",
+        "position_group",
     ]
     sampled_seasons = sorted({1999, *PRE_RELOCATION_SEASONS, PREVIOUS_SEASON - 1, PREVIOUS_SEASON, CURRENT_SEASON})
     for season in sampled_seasons:  # 1999 is the first stats_player_week season
@@ -152,7 +172,9 @@ def check_stats_player():
             print(
                 "   " + format_value_counts(frame, "season_type"),
                 "| weeks:",
-                frame.group_by("season_type").agg(pl.col("week").min().alias("min_week"), pl.col("week").max().alias("max_week")).rows(),
+                frame.group_by("season_type")
+                .agg(pl.col("week").min().alias("min_week"), pl.col("week").max().alias("max_week"))
+                .rows(),
             )
             print("   " + format_value_counts(frame, "position_group", 10))
             multi_team_players = (
@@ -167,7 +189,10 @@ def check_stats_player():
             )
             print(
                 "   null-player rows sample:",
-                frame.filter(pl.col("player_id").is_null()).select("player_display_name", "position", "team", "week").head(3).rows(),
+                frame.filter(pl.col("player_id").is_null())
+                .select("player_display_name", "position", "team", "week")
+                .head(3)
+                .rows(),
             )
         if season == PREVIOUS_SEASON:
             CACHED_FRAMES["stats_player_week"] = frame
@@ -175,7 +200,9 @@ def check_stats_player():
 
 def check_stats_team():
     print_section(f"stats_team_week {PREVIOUS_SEASON}")
-    frame = fetch_dataset_frame("stats_team", f"stats_team_week_{PREVIOUS_SEASON}.parquet", ["season", "week", "team", "season_type"])
+    frame = fetch_dataset_frame(
+        "stats_team", f"stats_team_week_{PREVIOUS_SEASON}.parquet", ["season", "week", "team", "season_type"]
+    )
     print_key_summary(frame, ["season", "week", "team"])
     print("   " + format_value_counts(frame, "season_type"))
 
@@ -183,8 +210,15 @@ def check_stats_team():
 def check_pbp():
     print_section("pbp")
     selected_columns = [
-        "game_id", "play_id", "week", "season_type", "posteam",
-        "home_team", "game_date", "start_time", "time_of_day",
+        "game_id",
+        "play_id",
+        "week",
+        "season_type",
+        "posteam",
+        "home_team",
+        "game_date",
+        "start_time",
+        "time_of_day",
     ]
     for season in (*PRE_RELOCATION_SEASONS, PREVIOUS_SEASON):
         frame = fetch_dataset_frame("pbp", f"play_by_play_{season}.parquet", selected_columns)
@@ -214,7 +248,9 @@ def check_players():
     )
     for id_column in ("pfr_id", "espn_id", "pff_id", "otc_id", "esb_id", "nfl_id", "smart_id"):
         non_null_ids = frame[id_column].drop_nulls()
-        print(f"   {id_column}: non-null={non_null_ids.len()} dup_values={non_null_ids.len() - non_null_ids.n_unique()}")
+        print(
+            f"   {id_column}: non-null={non_null_ids.len()} dup_values={non_null_ids.len() - non_null_ids.n_unique()}"
+        )
     print("   " + format_value_counts(frame, "position_group", 14))
     print("   " + format_value_counts(frame, "status", 10))
 
@@ -236,10 +272,21 @@ def check_rosters():
                 frame["week"].max(),
             )
             external_id_columns = (
-                "espn_id", "sportradar_id", "yahoo_id", "rotowire_id", "pff_id",
-                "pfr_id", "fantasy_data_id", "sleeper_id", "esb_id", "smart_id",
+                "espn_id",
+                "sportradar_id",
+                "yahoo_id",
+                "rotowire_id",
+                "pff_id",
+                "pfr_id",
+                "fantasy_data_id",
+                "sleeper_id",
+                "esb_id",
+                "smart_id",
             )
-            print("   other-id non-null share:", {col: round(frame[col].is_not_null().mean(), 2) for col in external_id_columns})
+            print(
+                "   other-id non-null share:",
+                {col: round(frame[col].is_not_null().mean(), 2) for col in external_id_columns},
+            )
 
     print_section("weekly_rosters")
     weekly_columns = ["season", "team", "week", "game_type", "gsis_id", "status", "status_description_abbr"]
@@ -288,10 +335,18 @@ def check_injuries():
             print("   " + format_value_counts(frame, "practice_status", 8))
         if "date_modified" in frame.columns and season == LAST_OLD_LAYOUT_SEASON:
             date_modified = frame["date_modified"]
-            weekday_counts = frame.select(date_modified.dt.weekday().alias("weekday"))["weekday"].value_counts(sort=True).rows()
+            weekday_counts = (
+                frame.select(date_modified.dt.weekday().alias("weekday"))["weekday"].value_counts(sort=True).rows()
+            )
             print(
-                "   date_modified:", date_modified.min(), "->", date_modified.max(),
-                "nulls", date_modified.null_count(), "| ISO weekday counts (5=Friday):", weekday_counts,
+                "   date_modified:",
+                date_modified.min(),
+                "->",
+                date_modified.max(),
+                "nulls",
+                date_modified.null_count(),
+                "| ISO weekday counts (5=Friday):",
+                weekday_counts,
             )
         if season == PREVIOUS_SEASON:
             CACHED_FRAMES["injuries"] = frame
@@ -311,7 +366,17 @@ def check_depth_charts():
         )
         print_key_summary(
             frame,
-            ["season", "club_code", "week", "game_type", "formation", "position", "depth_position", "depth_team", "gsis_id"],
+            [
+                "season",
+                "club_code",
+                "week",
+                "game_type",
+                "formation",
+                "position",
+                "depth_position",
+                "depth_team",
+                "gsis_id",
+            ],
         )
 
     print_section("depth_charts, snapshot layout")
@@ -345,7 +410,9 @@ def check_depth_charts():
 def check_nextgen_stats():
     print_section("nextgen_stats")
     for category in ("passing", "rushing", "receiving"):
-        frame = fetch_dataset_frame("nextgen_stats", f"ngs_{category}.parquet", ["season", "season_type", "week", "player_gsis_id"])
+        frame = fetch_dataset_frame(
+            "nextgen_stats", f"ngs_{category}.parquet", ["season", "season_type", "week", "player_gsis_id"]
+        )
         print(
             f" {category}: rows={frame.height} seasons {frame['season'].min()}-{frame['season'].max()} "
             f"week-0 rows={frame.filter(pl.col('week') == 0).height} null gsis={frame['player_gsis_id'].null_count()} "
@@ -360,22 +427,37 @@ def check_nextgen_stats():
 def check_participation_and_charting():
     print_section(f"pbp_participation {LATEST_PARTICIPATION_SEASON}")
     participation_columns = [
-        "offense_personnel", "offense_formation", "defense_personnel", "route",
-        "defense_man_zone_type", "was_pressure", "n_offense",
+        "offense_personnel",
+        "offense_formation",
+        "defense_personnel",
+        "route",
+        "defense_man_zone_type",
+        "was_pressure",
+        "n_offense",
     ]
     participation_frame = fetch_dataset_frame(
         "pbp_participation", f"pbp_participation_{LATEST_PARTICIPATION_SEASON}.parquet", participation_columns
     )
-    print("   non-null share:", {col: round(participation_frame[col].is_not_null().mean(), 3) for col in participation_frame.columns})
+    print(
+        "   non-null share:",
+        {col: round(participation_frame[col].is_not_null().mean(), 3) for col in participation_frame.columns},
+    )
     print("   " + format_value_counts(participation_frame, "offense_personnel", 4))
     print("   " + format_value_counts(participation_frame, "offense_formation", 8))
 
     print_section(f"ftn_charting {CURRENT_SEASON}")
-    charting_frame = fetch_dataset_frame("ftn_charting", f"ftn_charting_{CURRENT_SEASON}.parquet", ["week", "is_play_action", "date_pulled"])
+    charting_frame = fetch_dataset_frame(
+        "ftn_charting", f"ftn_charting_{CURRENT_SEASON}.parquet", ["week", "is_play_action", "date_pulled"]
+    )
     print(
-        "   weeks", charting_frame["week"].min(), "-", charting_frame["week"].max(),
-        "| date_pulled max:", charting_frame["date_pulled"].max(),
-        "| play_action share:", round(charting_frame["is_play_action"].mean(), 3),
+        "   weeks",
+        charting_frame["week"].min(),
+        "-",
+        charting_frame["week"].max(),
+        "| date_pulled max:",
+        charting_frame["date_pulled"].max(),
+        "| play_action share:",
+        round(charting_frame["is_play_action"].mean(), 3),
     )
 
 
@@ -401,12 +483,16 @@ def check_id_coverage():
         observed_ids = {value for value in CACHED_FRAMES[cache_key][id_column] if value}
         missing_ids = observed_ids - reference_ids
         missing_share = len(missing_ids) / max(len(observed_ids), 1)
-        print(f"   {label}: distinct={len(observed_ids)} missing={len(missing_ids)} ({missing_share:.3%}) e.g. {sorted(missing_ids)[:3]}")
+        print(
+            f"   {label}: distinct={len(observed_ids)} missing={len(missing_ids)} ({missing_share:.3%}) e.g. {sorted(missing_ids)[:3]}"
+        )
 
     print_id_coverage("stats_player_week player_id -> gsis_id", "stats_player_week", "player_id", known_gsis_ids)
     print_id_coverage("weekly_rosters gsis_id -> gsis_id", "weekly_rosters", "gsis_id", known_gsis_ids)
     print_id_coverage("injuries gsis_id -> gsis_id", "injuries", "gsis_id", known_gsis_ids)
-    print_id_coverage("ngs receiving (all seasons) player_gsis_id -> gsis_id", "ngs_receiving", "player_gsis_id", known_gsis_ids)
+    print_id_coverage(
+        "ngs receiving (all seasons) player_gsis_id -> gsis_id", "ngs_receiving", "player_gsis_id", known_gsis_ids
+    )
     print_id_coverage(f"depth_charts {CURRENT_SEASON} gsis_id -> gsis_id", "depth_charts", "gsis_id", known_gsis_ids)
     print_id_coverage("snap_counts pfr_player_id -> pfr_id", "snap_counts", "pfr_player_id", known_pfr_ids)
     if "snap_counts" in CACHED_FRAMES:

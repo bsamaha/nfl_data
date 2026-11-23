@@ -81,12 +81,14 @@ DuckDB runs in-process and reads the clean files directly:
 ```python
 import duckdb
 
-print(duckdb.sql("""
+print(
+    duckdb.sql("""
     SELECT s.season, g.game_type, count(*) AS player_games
     FROM read_parquet('data/clean/stats_player_week/*.parquet') s
     JOIN read_parquet('data/clean/schedules/games.parquet') g USING (game_id)
     GROUP BY 1, 2 ORDER BY 1, 2
-""").fetchall())
+""").fetchall()
+)
 ```
 
 Join games on `game_id`, not on team codes; `docs/SOURCE_INVENTORY.md` explains why.

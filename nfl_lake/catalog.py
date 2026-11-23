@@ -1,4 +1,5 @@
 """The dataset catalog, `catalog/datasets.yml`: one contract per dataset. Unknown settings are rejected."""
+
 from __future__ import annotations
 
 import hashlib
@@ -93,7 +94,9 @@ class Catalog(_StrictModel):
 
     @model_validator(mode="after")
     def _validate_dataset_names(self) -> Catalog:
-        invalid_names = [dataset_name for dataset_name in self.datasets if not _DATASET_NAME_PATTERN.match(dataset_name)]
+        invalid_names = [
+            dataset_name for dataset_name in self.datasets if not _DATASET_NAME_PATTERN.match(dataset_name)
+        ]
         if invalid_names:
             raise ValueError(f"dataset names must be lower_snake_case: {invalid_names}")
         return self

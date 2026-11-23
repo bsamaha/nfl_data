@@ -3,6 +3,7 @@
 These are the only tests that replace a library call: a rate limit, a server error and a dropped connection
 cannot be produced on demand any other way.
 """
+
 import http.client
 import io
 import json
@@ -165,10 +166,14 @@ def test_download_to_a_folder_that_cannot_be_written_makes_no_request(monkeypatc
 
 def test_cli_lists_the_catalog_repo_on_github_with_the_token_when_no_source_folder_is_set(monkeypatch, tmp_path):
     catalog_path = tmp_path / "datasets.yml"
-    catalog_path.write_text(yaml.safe_dump({
-        "source": {"repo": "example/repo"},
-        "datasets": {"pbp": {"release": "pbp", "file": "a.parquet", "key": ["play_id"]}},
-    }))
+    catalog_path.write_text(
+        yaml.safe_dump(
+            {
+                "source": {"repo": "example/repo"},
+                "datasets": {"pbp": {"release": "pbp", "file": "a.parquet", "key": ["play_id"]}},
+            }
+        )
+    )
     monkeypatch.setenv("NFL_LAKE_ROOT", str(tmp_path / "lake"))
     monkeypatch.setenv("NFL_LAKE_SOURCE_DIR", "")  # empty, not unset, so a developer's .env cannot fill it in
     monkeypatch.setenv("GITHUB_TOKEN", "t0ken")

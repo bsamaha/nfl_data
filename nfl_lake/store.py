@@ -1,14 +1,15 @@
 """Where things live on disk, and the manifest that records them.
 
-    <root>/raw/<dataset>/<file stem>/<upstream time>_<sha12>.parquet   files exactly as published
-    <root>/clean/<dataset>/<file name>                                 latest version, contract applied
-    <root>/rejects/<dataset>/<file name>                               rows set aside for a null key
-    <root>/manifest/raw_files.jsonl                                    one line per stored or pruned raw file
-    <root>/manifest/runs.jsonl                                         one line per update run
-    <root>/manifest/clean_state.json                                   what each clean file was built from
-    <root>/_staging/<run_id>/                                          files being fetched and built; removed when the run ends
-    <root>/.update.lock                                                present while an update runs
+<root>/raw/<dataset>/<file stem>/<upstream time>_<sha12>.parquet   files exactly as published
+<root>/clean/<dataset>/<file name>                                 latest version, contract applied
+<root>/rejects/<dataset>/<file name>                               rows set aside for a null key
+<root>/manifest/raw_files.jsonl                                    one line per stored or pruned raw file
+<root>/manifest/runs.jsonl                                         one line per update run
+<root>/manifest/clean_state.json                                   what each clean file was built from
+<root>/_staging/<run_id>/                                          files being fetched and built; removed after the run
+<root>/.update.lock                                                present while an update runs
 """
+
 from __future__ import annotations
 
 import json
@@ -89,7 +90,8 @@ class LakeStore:
                     "the lake and run update again."
                 )
             active_versions = [
-                existing for existing in versions_by_file_id.get(event["file_id"], [])
+                existing
+                for existing in versions_by_file_id.get(event["file_id"], [])
                 if existing["path"] != event["path"]
             ]
             if event["event"] == "stored":
@@ -127,7 +129,7 @@ class LakeStore:
         try:
             lock_info = json.loads(self.lock_path.read_text(encoding="utf-8"))
             return f" (pid {lock_info['pid']} since {lock_info['started']})"
-        except (OSError, ValueError, KeyError, TypeError):
+        except OSError, ValueError, KeyError, TypeError:
             return ""
 
     @contextmanager

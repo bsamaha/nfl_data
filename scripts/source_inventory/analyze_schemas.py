@@ -4,6 +4,7 @@ Local only; reads OUT_DIR/schemas.json written by probe_schemas.py.
 
 Usage: python analyze_schemas.py OUT_DIR [label,label,...]
 """
+
 import json
 import re
 import sys
@@ -38,7 +39,7 @@ for dataset_label, records in schemas_by_dataset.items():
         if not valid_records:
             print(f"\n## {dataset_label} :: {stem}  no file was read; failed: {', '.join(failed_files)}")
             continue
-        valid_records.sort(key=lambda record: (record["season"] or 0))
+        valid_records.sort(key=lambda record: record["season"] or 0)
         seasons = [record["season"] for record in valid_records if record["season"]]
         row_counts = [record["rows"] for record in valid_records]
         print(
@@ -70,10 +71,16 @@ for dataset_label, records in schemas_by_dataset.items():
                         f"   {record['season'] or record['file']}: rows={record['rows']}"
                         + (f" | +{len(added_columns)}: {format_preview(added_columns)}" if added_columns else "")
                         + (f" | -{len(removed_columns)}: {format_preview(removed_columns)}" if removed_columns else "")
-                        + (f" | type {len(retyped_columns)}: {format_preview(retyped_columns, 8)}" if retyped_columns else "")
+                        + (
+                            f" | type {len(retyped_columns)}: {format_preview(retyped_columns, 8)}"
+                            if retyped_columns
+                            else ""
+                        )
                     )
             previous_columns = current_columns
         latest_record = valid_records[-1]
-        print("   latest columns:", ", ".join(f"{col_name}:{col_type}" for col_name, col_type in latest_record["columns"]))
+        print(
+            "   latest columns:", ", ".join(f"{col_name}:{col_type}" for col_name, col_type in latest_record["columns"])
+        )
         if latest_record.get("kv"):
             print("   file metadata keys:", list(latest_record["kv"].items())[:4])

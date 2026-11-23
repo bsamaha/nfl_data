@@ -1,4 +1,5 @@
 """Command line: `python -m nfl_lake <command>`."""
+
 from __future__ import annotations
 
 import logging
@@ -99,7 +100,9 @@ def _handle_cli_errors() -> Iterator[None]:
         yield
     except UpdateFailed as error:
         if error.published_file_count:
-            publish_outcome = f"{error.published_file_count} file(s) were published before the failure; run update again"
+            publish_outcome = (
+                f"{error.published_file_count} file(s) were published before the failure; run update again"
+            )
         else:
             publish_outcome = "nothing was published; the clean layer is unchanged"
         _exit_with_errors(error.errors + [publish_outcome])
@@ -110,10 +113,16 @@ def _handle_cli_errors() -> Iterator[None]:
 @app.command()
 def update(
     datasets: str | None = typer.Option(None, help="Comma-separated dataset names. Default: every dataset."),
-    skip: str | None = typer.Option(None, help="Comma-separated dataset names to leave out, e.g. one that is broken upstream."),
+    skip: str | None = typer.Option(
+        None, help="Comma-separated dataset names to leave out, e.g. one that is broken upstream."
+    ),
     seasons: str | None = typer.Option(None, help="Seasons to consider: 2026, 2015-2026 or 2024,2026. Default: all."),
-    accept_schema_change: bool = typer.Option(False, "--accept-schema-change", help="Publish files whose columns were removed or changed type."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be fetched and rebuilt, and change nothing."),
+    accept_schema_change: bool = typer.Option(
+        False, "--accept-schema-change", help="Publish files whose columns were removed or changed type."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be fetched and rebuilt, and change nothing."
+    ),
     workers: int = typer.Option(4, min=1, max=16, help="Parallel downloads."),
 ) -> None:
     """Fetch every file that changed upstream, rebuild the clean layer from it, and publish only if every file passed.
@@ -123,7 +132,9 @@ def update(
     with _handle_cli_errors():
         catalog, lake, source = _load_runtime_context()
         selected_dataset_names = _parse_dataset_names(datasets)
-        selected_datasets = catalog.select_datasets(selected_dataset_names)  # unknown names stop before listing upstream
+        selected_datasets = catalog.select_datasets(
+            selected_dataset_names
+        )  # unknown names stop before listing upstream
         skipped_dataset_names = _parse_dataset_names(skip)
         if skipped_dataset_names is not None:
             catalog.select_datasets(skipped_dataset_names)  # an unknown name is an error here too
@@ -181,7 +192,9 @@ def status() -> None:
         catalog, lake, _ = _load_runtime_context()
         lake_status = get_lake_status(catalog, lake)
         typer.echo(f"lake: {lake.root_dir.resolve()}")
-        typer.echo(f"{'dataset':<20}{'files':>6}  {'seasons':<10}{'rows':>11}{'set aside':>10}  {'upstream updated':<21}built")
+        typer.echo(
+            f"{'dataset':<20}{'files':>6}  {'seasons':<10}{'rows':>11}{'set aside':>10}  {'upstream updated':<21}built"
+        )
         for dataset_status in lake_status.datasets:
             typer.echo(
                 f"{dataset_status.dataset_name:<20}{dataset_status.file_count:>6}  "

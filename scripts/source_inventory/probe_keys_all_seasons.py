@@ -7,6 +7,7 @@ Run list_releases.py first.
 
 Usage: python probe_keys_all_seasons.py OUT_DIR
 """
+
 import concurrent.futures as concurrent_futures
 import sys
 
@@ -26,19 +27,30 @@ schedules_frame = read_remote_columns(
     next(asset for asset in releases_by_tag["schedules"]["assets"] if asset["name"] == "games.parquet")
 )
 schedule_game_ids_by_season = {
-    season: set(season_games["game_id"])
-    for (season,), season_games in schedules_frame.group_by("season")
+    season: set(season_games["game_id"]) for (season,), season_games in schedules_frame.group_by("season")
 }
 RELOCATED_TEAM_CODES = {"OAK", "SD", "STL", "LV", "LAC", "LA"}
 
 # dataset_label: (release tag, file regex, key columns, extra columns to read, game-id column or None)
 KEY_CHECKS = {
     "pbp": ("pbp", r"play_by_play_\d{4}\.parquet", ["game_id", "play_id"], ["home_team"], "game_id"),
-    "stats_player_week": ("stats_player", r"stats_player_week_\d{4}\.parquet", ["player_id", "game_id"], ["week", "season_type"], "game_id"),
+    "stats_player_week": (
+        "stats_player",
+        r"stats_player_week_\d{4}\.parquet",
+        ["player_id", "game_id"],
+        ["week", "season_type"],
+        "game_id",
+    ),
     "stats_team_week": ("stats_team", r"stats_team_week_\d{4}\.parquet", ["team", "game_id"], [], "game_id"),
     "snap_counts": ("snap_counts", r"snap_counts_\d{4}\.parquet", ["game_id", "pfr_player_id"], [], "game_id"),
     "injuries": ("injuries", r"injuries_\d{4}\.parquet", ["season", "game_type", "week", "team", "gsis_id"], [], None),
-    "weekly_rosters": ("weekly_rosters", r"roster_weekly_\d{4}\.parquet", ["season", "week", "game_type", "team", "gsis_id"], [], None),
+    "weekly_rosters": (
+        "weekly_rosters",
+        r"roster_weekly_\d{4}\.parquet",
+        ["season", "week", "game_type", "team", "gsis_id"],
+        [],
+        None,
+    ),
     # roster files before 1990 are not read
     "rosters": ("rosters", r"roster_(199\d|20\d\d)\.parquet", ["season", "team", "gsis_id"], [], None),
     # the week-based depth chart layout ended with the 2024 season
@@ -56,8 +68,20 @@ KEY_CHECKS = {
         [],
         None,
     ),
-    "pbp_participation": ("pbp_participation", r"pbp_participation_\d{4}\.parquet", ["nflverse_game_id", "play_id"], ["offense_personnel"], "nflverse_game_id"),
-    "ftn_charting": ("ftn_charting", r"ftn_charting_\d{4}\.parquet", ["nflverse_game_id", "nflverse_play_id"], [], "nflverse_game_id"),
+    "pbp_participation": (
+        "pbp_participation",
+        r"pbp_participation_\d{4}\.parquet",
+        ["nflverse_game_id", "play_id"],
+        ["offense_personnel"],
+        "nflverse_game_id",
+    ),
+    "ftn_charting": (
+        "ftn_charting",
+        r"ftn_charting_\d{4}\.parquet",
+        ["nflverse_game_id", "nflverse_play_id"],
+        [],
+        "nflverse_game_id",
+    ),
     "pfr_week_rec": ("pfr_advstats", r"advstats_week_rec_\d{4}\.parquet", ["game_id", "pfr_player_id"], [], "game_id"),
 }
 
@@ -126,17 +150,30 @@ for dataset_label, season_reports in reports_by_dataset.items():
         f"\n## {dataset_label}: files={len(season_reports)} "
         f"seasons {season_reports[0]['season']}-{season_reports[-1]['season']} key={KEY_CHECKS[dataset_label][2]}"
     )
-    print("   null-key rows by season:", {report["season"]: report["null_rows"] for report in valid_reports if report["null_rows"]} or "none")
-    print("   dup rows by season:", {report["season"]: report["dup"] for report in valid_reports if report["dup"]} or "none")
-    print("   null key cells by season:", {report["season"]: report["nulls"] for report in valid_reports if report["nulls"]} or "none")
-    print("   empty-string ids by season:", {report["season"]: report["empty"] for report in valid_reports if report["empty"]} or "none")
+    print(
+        "   null-key rows by season:",
+        {report["season"]: report["null_rows"] for report in valid_reports if report["null_rows"]} or "none",
+    )
+    print(
+        "   dup rows by season:",
+        {report["season"]: report["dup"] for report in valid_reports if report["dup"]} or "none",
+    )
+    print(
+        "   null key cells by season:",
+        {report["season"]: report["nulls"] for report in valid_reports if report["nulls"]} or "none",
+    )
+    print(
+        "   empty-string ids by season:",
+        {report["season"]: report["empty"] for report in valid_reports if report["empty"]} or "none",
+    )
     print("   empty files:", [report["season"] for report in valid_reports if report["rows"] == 0] or "none")
     if KEY_CHECKS[dataset_label][4]:
         print(
             "   game ids not in schedules:",
             {report["season"]: report["not_in_sched"] for report in valid_reports if report["not_in_sched"]} or "none",
             "| schedule games absent here:",
-            {report["season"]: report["sched_missing"] for report in valid_reports if report["sched_missing"]} or "none",
+            {report["season"]: report["sched_missing"] for report in valid_reports if report["sched_missing"]}
+            or "none",
         )
     if dataset_label == "pbp":
         print(
@@ -172,7 +209,9 @@ print(
     "   POST week range, by season where it changes:",
     find_value_changes((season, (min_week, max_week)) for season, min_week, max_week in postseason_weeks.rows()),
 )
-home_teams_by_season = schedules_frame.group_by("season").agg(pl.col("home_team").unique().alias("teams")).sort("season")
+home_teams_by_season = (
+    schedules_frame.group_by("season").agg(pl.col("home_team").unique().alias("teams")).sort("season")
+)
 print(
     "   relocation codes, by season where they change:",
     find_value_changes(

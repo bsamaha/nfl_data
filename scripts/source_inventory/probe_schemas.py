@@ -5,6 +5,7 @@ Writes OUT_DIR/schemas.json. Run list_releases.py first.
 
 Usage: python probe_schemas.py OUT_DIR
 """
+
 import concurrent.futures as concurrent_futures
 import json
 import sys
@@ -98,7 +99,12 @@ failed_probes = [
     for record in records
     if "error" in record
 ]
-print("ok:", sum(len(records) for records in schemas_by_dataset.values()) - len(failed_probes), "errors:", len(failed_probes))
+print(
+    "ok:",
+    sum(len(records) for records in schemas_by_dataset.values()) - len(failed_probes),
+    "errors:",
+    len(failed_probes),
+)
 print_bytes_fetched()
 for failed_probe in failed_probes:
     print("  ", failed_probe)

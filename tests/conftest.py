@@ -3,6 +3,7 @@
 The tests check what a run did: which files are on disk, what was fetched and built, which exit code came back.
 None of them matches the wording of a message, so each bad input has exactly one fault.
 """
+
 from pathlib import Path
 
 import polars as pl
@@ -65,10 +66,12 @@ GAMES_FILE_ID = "games/games.parquet"
 def make_stats_frame(targets: int = 8) -> pl.DataFrame:
     """Two players in one game. The 32-bit and the nullable integer column are there so that comparing a clean
     file with this frame also checks that integer types survive."""
-    return pl.DataFrame({
-        "player_id": ["00-002", "00-001"],
-        "game_id": ["2024_01_BUF_MIA", "2024_01_BUF_MIA"],
-        "targets": [3, targets],
-        "week": pl.Series([1, 1], dtype=pl.Int32),
-        "draft_number": pl.Series([12, None], dtype=pl.Int64),
-    })
+    return pl.DataFrame(
+        {
+            "player_id": ["00-002", "00-001"],
+            "game_id": ["2024_01_BUF_MIA", "2024_01_BUF_MIA"],
+            "targets": [3, targets],
+            "week": pl.Series([1, 1], dtype=pl.Int32),
+            "draft_number": pl.Series([12, None], dtype=pl.Int64),
+        }
+    )

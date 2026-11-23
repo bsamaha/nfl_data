@@ -1,4 +1,5 @@
 """The command line: exit codes and what ends up on disk. A scheduled job acts on the exit code."""
+
 import polars as pl
 import pytest
 import yaml
@@ -110,8 +111,10 @@ def test_datasets_and_skip_options_limit_the_run(make_cli, upstream, lake):
     assert command_succeeded(result), result.output
     assert published_datasets() == ["stats"]
 
-    upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1"]}))                          # games is fixed
-    upstream.put("stats_player", STATS_FILENAME, pl.concat([make_stats_frame(), make_stats_frame()]))      # and stats breaks
+    upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1"]}))  # games is fixed
+    upstream.put(
+        "stats_player", STATS_FILENAME, pl.concat([make_stats_frame(), make_stats_frame()])
+    )  # and stats breaks
     result = cli("update", "--datasets", "games")
     assert command_succeeded(result), result.output
     assert published_datasets() == ["games", "stats"]
@@ -175,7 +178,9 @@ def test_stale_lock_stops_an_update_until_unlock(cli, upstream, lake):
 
 
 def test_missing_source_folder_is_an_error_and_a_relative_one_works(cli, upstream, lake, tmp_path, monkeypatch):
-    assert command_refused(cli("update", "--dry-run")) and command_refused(cli("update"))  # the folder does not exist yet
+    assert command_refused(cli("update", "--dry-run")) and command_refused(
+        cli("update")
+    )  # the folder does not exist yet
     assert [run["status"] for run in lake.load_run_records()] == ["failed"]  # only the real run is recorded
 
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame())

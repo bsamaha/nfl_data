@@ -1,4 +1,5 @@
 """Read nflverse Parquet files over HTTP without saving them: footers for schema, range reads for columns."""
+
 import io
 import json
 import re
@@ -32,7 +33,11 @@ UNMATCHED_ASSET_PATTERNS: list[str] = []
 def find_release_assets(releases_by_tag, release_tag, filename_regex):
     compiled_pattern = re.compile(filename_regex)
     matched_assets = sorted(
-        (asset for asset in releases_by_tag.get(release_tag, {}).get("assets", []) if compiled_pattern.fullmatch(asset["name"])),
+        (
+            asset
+            for asset in releases_by_tag.get(release_tag, {}).get("assets", [])
+            if compiled_pattern.fullmatch(asset["name"])
+        ),
         key=lambda asset: asset["name"],
     )
     if not matched_assets:
@@ -122,7 +127,7 @@ class RemoteRangeFile(io.RawIOBase):
         cursor = self.byte_offset
         while len(buffer) < num_bytes:
             block_index, offset_in_block = divmod(cursor, self.BLOCK_SIZE_BYTES)
-            chunk = self._fetch_block(block_index)[offset_in_block:offset_in_block + (num_bytes - len(buffer))]
+            chunk = self._fetch_block(block_index)[offset_in_block : offset_in_block + (num_bytes - len(buffer))]
             if not chunk:
                 break
             buffer += chunk
@@ -139,4 +144,3 @@ def read_remote_columns(asset, columns=None):
     selected_columns = [col_name for col_name in columns if col_name in available_columns] if columns else None
     arrow_table = parquet_file.read(columns=selected_columns)
     return pl.from_arrow(arrow_table)
-

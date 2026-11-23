@@ -6,6 +6,7 @@ the key is still not unique and non-null, or if, against the published version, 
 than `max_row_drop` of its rows, lost a column or changed a column type (the last two pass with
 accept_schema_change).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -48,10 +49,12 @@ def _normalize_blank_key_strings(frame: pl.DataFrame, key_columns: list[str]) ->
     string_key_columns = [col_name for col_name in key_columns if frame.schema[col_name] == pl.String]
     if not string_key_columns:
         return frame
-    return frame.with_columns([
-        pl.when(pl.col(col_name) == "").then(None).otherwise(pl.col(col_name)).alias(col_name)
-        for col_name in string_key_columns
-    ])
+    return frame.with_columns(
+        [
+            pl.when(pl.col(col_name) == "").then(None).otherwise(pl.col(col_name)).alias(col_name)
+            for col_name in string_key_columns
+        ]
+    )
 
 
 def count_key_violations(frame: pl.DataFrame, key_columns: list[str]) -> KeyViolationCounts:
@@ -101,21 +104,15 @@ def build_clean(
     order_column = dataset.spec.keep_last_by
     if order_column and order_column in clean_frame.columns:
         row_count_before_dedup = clean_frame.height
-        clean_frame = (
-            clean_frame
-            .sort(order_column, nulls_last=False, maintain_order=True)
-            .unique(subset=key_columns, keep="last", maintain_order=True)
+        clean_frame = clean_frame.sort(order_column, nulls_last=False, maintain_order=True).unique(
+            subset=key_columns, keep="last", maintain_order=True
         )
         deduped_row_count = row_count_before_dedup - clean_frame.height
 
     violations = count_key_violations(clean_frame, key_columns)
     if violations.duplicate_key_rows:
         sample_duplicate_keys = (
-            clean_frame.filter(pl.struct(key_columns).is_duplicated())
-            .select(key_columns)
-            .unique()
-            .head(3)
-            .rows()
+            clean_frame.filter(pl.struct(key_columns).is_duplicated()).select(key_columns).unique().head(3).rows()
         )
         unused_rule = ""
         if order_column and order_column not in clean_frame.columns:
@@ -151,10 +148,15 @@ def build_clean(
         if added_columns:
             notes.append(f"new column(s) {', '.join(added_columns)}")
         if removed_columns or retyped_columns:
-            schema_change_summary = "; ".join(filter(None, [
-                f"removed: {', '.join(removed_columns)}" if removed_columns else "",
-                f"type changed: {', '.join(retyped_columns)}" if retyped_columns else "",
-            ]))
+            schema_change_summary = "; ".join(
+                filter(
+                    None,
+                    [
+                        f"removed: {', '.join(removed_columns)}" if removed_columns else "",
+                        f"type changed: {', '.join(retyped_columns)}" if retyped_columns else "",
+                    ],
+                )
+            )
             if not accept_schema_change:
                 raise ContractError(
                     f"schema changed ({schema_change_summary}). Re-run with --accept-schema-change "

@@ -3,6 +3,7 @@
 `GitHubReleasesSource` reads the public nflverse-data releases. `LocalDirSource` reads a folder laid out
 as `<release>/<file>`; the tests use it, and it also works as an offline mirror.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -42,8 +43,8 @@ class UpstreamAsset:
     release_tag: str
     filename: str
     size_bytes: int
-    updated_at: str        # ISO 8601 UTC, as upstream reports it
-    sha256: str | None     # hex digest, when upstream publishes one
+    updated_at: str  # ISO 8601 UTC, as upstream reports it
+    sha256: str | None  # hex digest, when upstream publishes one
     download_url: str
 
 
@@ -80,7 +81,10 @@ class GitHubReleasesSource:
         self.backoff_seconds = backoff_seconds
 
     def _retry_transient_errors(self, operation: str, action: Callable[[], ResultT]) -> ResultT:
-        """Run `action` up to `max_attempts` times. Server errors and failed connections are retried; rate limits and 4xx are not."""
+        """Run `action` up to `max_attempts` times.
+
+        Server errors and failed connections are retried; rate limits and 4xx are not.
+        """
         last_error: Exception | None = None
         for attempt_number in range(1, self.max_attempts + 1):
             try:
@@ -99,8 +103,7 @@ class GitHubReleasesSource:
             if http_error.code in (403, 429) and http_error.headers.get("X-RateLimit-Remaining") == "0":
                 reset_epoch = http_error.headers.get("X-RateLimit-Reset")
                 reset_time_utc = (
-                    datetime.fromtimestamp(int(reset_epoch), UTC).strftime("%H:%M UTC")
-                    if reset_epoch else "later"
+                    datetime.fromtimestamp(int(reset_epoch), UTC).strftime("%H:%M UTC") if reset_epoch else "later"
                 )
                 raise SourceError(
                     f"GitHub API rate limit reached while {operation}. Retry after {reset_time_utc}, or set GITHUB_TOKEN."

@@ -12,6 +12,7 @@ Publish goes file by file: the rejects file is moved or removed, then the clean 
 there can leave some files published and one more file's rejects ahead of its clean copy; the next run
 finishes it. A dry run and a held lock record nothing.
 """
+
 from __future__ import annotations
 
 import concurrent.futures as concurrent_futures
@@ -251,7 +252,8 @@ def _fetch_targets(
 ) -> tuple[list[str], list[tuple[IngestTarget, str]]]:
     """Fetch files in parallel and record each one stored.
 
-    Returns (errors, mismatched): `mismatched` pairs each target whose download did not match the listing with what differed.
+    Returns (errors, mismatched). `mismatched` pairs each target whose download did not match the listing
+    with what differed.
     """
     errors: list[str] = []
     mismatched: list[tuple[IngestTarget, str]] = []
@@ -349,7 +351,8 @@ def _execute_update(
         summary.fetched_file_ids = sorted(target.file_id for target in targets_to_fetch)
         fetching_file_ids = set(summary.fetched_file_ids)
         summary.rebuilt_file_ids = sorted(
-            target.file_id for target in targets
+            target.file_id
+            for target in targets
             if target.file_id in fetching_file_ids or _needs_rebuild(target, raw_versions_by_file, clean_state, lake)
         )
         summary.bytes_fetched = sum(target.asset.size_bytes for target in targets_to_fetch)
@@ -449,13 +452,15 @@ def _execute_update(
             continue
         for obsolete_raw in raw_versions_by_file.get(target.file_id, [])[:-1]:
             (lake.root_dir / obsolete_raw["path"]).unlink(missing_ok=True)
-            lake.append_raw_file_event({
-                "event": "pruned",
-                "file_id": target.file_id,
-                "path": obsolete_raw["path"],
-                "run_id": summary.run_id,
-                "pruned_at": published_at,
-            })
+            lake.append_raw_file_event(
+                {
+                    "event": "pruned",
+                    "file_id": target.file_id,
+                    "path": obsolete_raw["path"],
+                    "run_id": summary.run_id,
+                    "pruned_at": published_at,
+                }
+            )
             summary.pruned_raw_count += 1
     summary.unchanged_file_count = len(targets) - len(summary.rebuilt_file_ids)
 
@@ -481,24 +486,26 @@ def run_update(
         )
 
     def record_run(run_status: str, errors: list[str]) -> None:
-        lake.append_run_record({
-            "run_id": summary.run_id,
-            "status": run_status,
-            "errors": errors,
-            "started_at": format_utc_iso(started_at),
-            "finished_at": format_utc_iso(utc_now()),
-            "datasets": dataset_names,
-            "seasons": sorted(season_filter) if season_filter else None,
-            "listed": summary.target_file_count,
-            "fetched": len(summary.fetched_file_ids),
-            "built": len(summary.rebuilt_file_ids),
-            "unchanged": summary.unchanged_file_count,
-            "pruned": summary.pruned_raw_count,
-            "bytes_fetched": summary.bytes_fetched,
-            "rejected_rows": sum(summary.rejected_rows_by_file.values()),
-            "deduped_rows": sum(summary.deduped_rows_by_file.values()),
-            "notes": summary.notes,
-        })
+        lake.append_run_record(
+            {
+                "run_id": summary.run_id,
+                "status": run_status,
+                "errors": errors,
+                "started_at": format_utc_iso(started_at),
+                "finished_at": format_utc_iso(utc_now()),
+                "datasets": dataset_names,
+                "seasons": sorted(season_filter) if season_filter else None,
+                "listed": summary.target_file_count,
+                "fetched": len(summary.fetched_file_ids),
+                "built": len(summary.rebuilt_file_ids),
+                "unchanged": summary.unchanged_file_count,
+                "pruned": summary.pruned_raw_count,
+                "bytes_fetched": summary.bytes_fetched,
+                "rejected_rows": sum(summary.rejected_rows_by_file.values()),
+                "deduped_rows": sum(summary.deduped_rows_by_file.values()),
+                "notes": summary.notes,
+            }
+        )
 
     if dry_run:  # reads only: no lock, no manifest entry
         execute()
@@ -562,7 +569,9 @@ def verify_lake(
                 errors.append(f"{file_id}: clean file cannot be read ({type(error).__name__})")
             else:
                 if key_frame.height != published_entry["rows"]:
-                    errors.append(f"{file_id}: has {key_frame.height} rows but {published_entry['rows']} were published")
+                    errors.append(
+                        f"{file_id}: has {key_frame.height} rows but {published_entry['rows']} were published"
+                    )
                 violations = count_key_violations(key_frame, dataset.key_columns)
                 if violations.null_key_rows or violations.duplicate_key_rows:
                     errors.append(
@@ -574,7 +583,9 @@ def verify_lake(
             if not raw_path.exists():
                 errors.append(f"{file_id}: raw file {published_entry['raw_path']} is missing")
             elif compute_file_sha256(raw_path) != published_entry["raw_sha256"]:
-                errors.append(f"{file_id}: raw file {published_entry['raw_path']} no longer matches its recorded checksum")
+                errors.append(
+                    f"{file_id}: raw file {published_entry['raw_path']} no longer matches its recorded checksum"
+                )
     return VerificationResult(checked_file_count=checked_file_count, errors=errors)
 
 
@@ -591,14 +602,18 @@ def get_lake_status(catalog: Catalog, lake: LakeStore) -> LakeStatus:
         season_span = f"{seasons[0]}-{seasons[-1]}" if seasons else "-"
         if seasons and len(seasons) <= seasons[-1] - seasons[0]:
             season_span += "*"
-        dataset_summaries.append(DatasetStatus(
-            dataset_name=dataset.name,
-            file_count=len(dataset_entries),
-            season_span=season_span,
-            row_count=sum(entry["rows"] for entry in dataset_entries),
-            rejected_row_count=sum(entry["rejected_rows"] for entry in dataset_entries),
-            latest_upstream_updated_at=max((entry["upstream_updated_at"] for entry in dataset_entries), default="-"),
-            latest_built_at=max((entry["built_at"] for entry in dataset_entries), default="-"),
-        ))
+        dataset_summaries.append(
+            DatasetStatus(
+                dataset_name=dataset.name,
+                file_count=len(dataset_entries),
+                season_span=season_span,
+                row_count=sum(entry["rows"] for entry in dataset_entries),
+                rejected_row_count=sum(entry["rejected_rows"] for entry in dataset_entries),
+                latest_upstream_updated_at=max(
+                    (entry["upstream_updated_at"] for entry in dataset_entries), default="-"
+                ),
+                latest_built_at=max((entry["built_at"] for entry in dataset_entries), default="-"),
+            )
+        )
     run_records = lake.load_run_records()
     return LakeStatus(datasets=dataset_summaries, last_run=(run_records[-1] if run_records else None))
