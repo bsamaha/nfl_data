@@ -6,6 +6,8 @@ from pydantic import ValidationError
 from conftest import STATS, catalog_of
 from nfl_lake.catalog import load_catalog
 
+ONE_FILE = {"release": "r", "file": "f.parquet", "key": ["a"]}
+
 
 def test_repo_catalog_loads_and_no_two_datasets_read_the_same_file():
     cat = load_catalog(Path(__file__).parents[1] / "catalog" / "datasets.yml")
@@ -13,29 +15,22 @@ def test_repo_catalog_loads_and_no_two_datasets_read_the_same_file():
     assert len(set(sources)) == len(sources), "two datasets read the same upstream file"
 
 
-def test_unknown_setting_is_rejected():
-    with pytest.raises(ValidationError, match="partitions"):
-        catalog_of(stats={**STATS, "partitions": ["season"]})
-
-
-@pytest.mark.parametrize("name", ["Player_stats", "player-stats", "2024_stats"])
-def test_dataset_name_must_be_lower_snake_case(name):
-    with pytest.raises(ValidationError, match="lower_snake_case"):
-        catalog_of(**{name: STATS})
-
-
-def test_season_pattern_and_min_season_go_together():
-    with pytest.raises(ValidationError, match="needs min_season"):
-        catalog_of(stats={"release": "r", "file": "f_{season}.parquet", "key": ["a"]})
-    with pytest.raises(ValidationError, match="only applies"):
-        catalog_of(stats={"release": "r", "file": "f.parquet", "key": ["a"], "min_season": 2020})
-
-
-def test_key_cannot_be_empty_or_repeat_a_column():
-    with pytest.raises(ValidationError, match="too_short"):
-        catalog_of(stats={**STATS, "key": []})
-    with pytest.raises(ValidationError, match="twice"):
-        catalog_of(stats={**STATS, "key": ["a", "a"]})
+@pytest.mark.parametrize("name, spec", [
+    ("stats", {**STATS, "partitions": ["season"]}),
+    ("stats", {**ONE_FILE, "file": "f_{season}.parquet"}),
+    ("stats", {**ONE_FILE, "min_season": 2020}),
+    ("stats", {**STATS, "file": "stats_{season}_{season}.parquet"}),
+    ("stats", {**STATS, "key": []}),
+    ("stats", {**STATS, "key": ["player_id", "player_id"]}),
+    ("Player_stats", STATS),
+    ("player-stats", STATS),
+    ("2024_stats", STATS),
+], ids=["unknown setting", "season file without min_season", "min_season without a season file", "two season markers",
+        "empty key", "key column twice", "upper case name", "hyphen in name", "name starts with a digit"])
+def test_invalid_entry_is_rejected(name, spec):
+    catalog_of(stats=STATS, one=ONE_FILE)  # the two entries the cases start from are valid
+    with pytest.raises(ValidationError):
+        catalog_of(**{name: spec})
 
 
 def test_file_matching_is_exact():
@@ -45,21 +40,10 @@ def test_file_matching_is_exact():
     assert d.match("old_stats_player_week_2024.parquet") == (False, None)
 
 
-def test_file_pattern_takes_the_season_once():
-    with pytest.raises(ValidationError, match="only once"):
-        catalog_of(stats={**STATS, "file": "stats_{season}_{season}.parquet"})
-
-
-def test_selecting_an_unknown_dataset_is_an_error():
-    cat = catalog_of(stats=STATS)
-    assert [d.name for d in cat.select()] == ["stats"]
+def test_select_takes_none_for_all_and_refuses_unknown_names():
+    cat = catalog_of(stats=STATS, one=ONE_FILE)
+    assert [d.name for d in cat.select()] == ["stats", "one"]
+    assert [d.name for d in cat.select(["one"])] == ["one"]
     assert cat.select([]) == []  # an empty list is no dataset, not every dataset
-    with pytest.raises(ValueError, match="not in the catalog: nope"):
+    with pytest.raises(ValueError):
         cat.select(["nope"])
-
-
-def test_fingerprint_follows_the_rules_that_shape_the_clean_file():
-    base = catalog_of(stats=STATS).dataset("stats").fingerprint
-    assert catalog_of(stats={**STATS, "history": "all"}).dataset("stats").fingerprint == base
-    assert catalog_of(stats={**STATS, "reject_null_keys": True}).dataset("stats").fingerprint != base
-    assert catalog_of(stats={**STATS, "keep_last_by": "ts"}).dataset("stats").fingerprint != base

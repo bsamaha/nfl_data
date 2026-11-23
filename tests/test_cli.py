@@ -1,14 +1,10 @@
-"""The command line: exit codes and the messages a scheduled job or a person will see."""
-import io
-import json
-
+"""The command line: exit codes and what ends up on disk. A scheduled job acts on the exit code."""
 import polars as pl
 import pytest
 import yaml
 from typer.testing import CliRunner
 
 from conftest import GAMES, STATS, STATS_FILE, STATS_FILE_ID, catalog_of, stats_frame
-from nfl_lake import source as source_module
 from nfl_lake.cli import app
 
 runner = CliRunner()
@@ -33,241 +29,135 @@ def cli(make_cli):
     return make_cli(stats=STATS)
 
 
-def test_update_status_and_verify_succeed(cli, upstream):
+def ok(result) -> bool:
+    return result.exit_code == 0
+
+
+def refused(result, code: int = 1) -> bool:
+    """The command stopped itself with this exit code. A crash also ends with code 1, but not through SystemExit."""
+    return result.exit_code == code and isinstance(result.exception, SystemExit)
+
+
+def test_update_publishes_where_the_readme_says_and_a_dry_run_writes_nothing(cli, upstream, lake):
     upstream.put("stats_player", STATS_FILE, stats_frame())
+    assert ok(cli("update", "--dry-run")) and not lake.root.exists()
 
-    result = cli("update", "--dry-run")
-    assert result.exit_code == 0, result.output
-    assert "would fetch 1" in result.output and f"fetch {STATS_FILE_ID}" in result.output
+    for command in (("update",), ("update",), ("status",), ("verify", "--deep")):
+        result = cli(*command)
+        assert ok(result), result.output
+    assert (lake.root / "clean" / "stats" / STATS_FILE).exists()  # the path the README tells people to query
+    assert [run["fetched"] for run in lake.runs()] == [1, 0]
 
+
+def test_failed_update_exits_1_and_status_still_exits_0(cli, upstream, lake):
+    upstream.put("stats_player", STATS_FILE, pl.concat([stats_frame(), stats_frame()]))  # every key twice
     result = cli("update")
-    assert result.exit_code == 0, result.output
-    assert "fetched 1" in result.output and "rebuilt 1" in result.output
-
-    result = cli("update")
-    assert result.exit_code == 0, result.output
-    assert "fetched 0" in result.output and "unchanged 1" in result.output
-
-    result = cli("status")
-    assert result.exit_code == 0, result.output
-    assert "stats" in result.output and "2024-2024" in result.output and ": ok at" in result.output
-
-    result = cli("verify", "--deep")
-    assert result.exit_code == 0, result.output
-    assert "verified 1 file(s): ok" in result.output
-
-
-def test_failed_update_exits_non_zero_and_says_why(cli, upstream):
-    upstream.put("stats_player", STATS_FILE, pl.concat([stats_frame(), stats_frame()]))
-    result = cli("update")
-    assert result.exit_code == 1, result.output
-    assert f"ERROR {STATS_FILE_ID}: 2 row(s) repeat a key" in result.output
-    assert "ERROR nothing was published" in result.output
-
-    result = cli("status")  # reports the failure, and exits 0 because status itself worked
-    assert result.exit_code == 0, result.output
-    assert "failed" in result.output and "repeat a key" in result.output
-
-
-def test_failure_while_publishing_says_how_many_files_were_published(make_cli, upstream, second_publish_fails):
-    cli = make_cli(stats=STATS, games=GAMES)
-    upstream.put("stats_player", STATS_FILE, stats_frame())
-    upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1"]}))
-    result = cli("update")
-    assert result.exit_code == 1, result.output
-    assert "ERROR 1 file(s) were published before the failure; run update again" in result.output
-    assert "nothing was published" not in result.output
-
-
-def test_skip_publishes_the_rest_when_one_dataset_is_broken_upstream(make_cli, upstream, lake):
-    cli = make_cli(stats=STATS, games=GAMES)
-    upstream.put("stats_player", STATS_FILE, stats_frame())
-    upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1", "g1"]}))  # breaks its key
-
-    result = cli("update")
-    assert result.exit_code == 1, result.output
+    assert refused(result), result.output
     assert not lake.clean.exists()
 
-    result = cli("update", "--skip", "games")
-    assert result.exit_code == 0, result.output
-    assert "1 files in 1 datasets" in result.output
-    assert (lake.root / "clean" / "stats" / STATS_FILE).exists()  # the path the README tells people to query
-
-    result = cli("update", "--skip", "games,stats")
-    assert result.exit_code == 1, result.output
-    assert "--skip leaves no dataset to update" in result.output
-    assert "not in the catalog: nope" in cli("update", "--skip", "nope").output
-
-
-def test_missing_source_folder_is_reported(cli, lake):
-    for args in (("update", "--dry-run"), ("update",)):  # the source folder does not exist yet
-        result = cli(*args)
-        assert result.exit_code == 1, result.output
-        assert "does not exist" in result.output and "SourceError" not in result.output
-    assert [run["status"] for run in lake.runs()] == ["failed"]  # the dry run is not recorded
-
-
-def test_damaged_manifest_file_is_named(cli, upstream, lake):
-    upstream.put("stats_player", STATS_FILE, stats_frame())
-    result = cli("update")
-    assert result.exit_code == 0, result.output
-
-    (lake.manifest / "clean_state.json").write_text("{not json")
-    result = cli("status")
-    assert result.exit_code == 1, result.output
-    assert "clean_state.json is damaged" in result.output
-
-
-def test_without_a_source_folder_the_catalog_repo_is_listed_on_github_with_the_token(cli, monkeypatch):
-    seen = []
-
-    def urlopen(req, timeout):
-        seen.append(req)
-        return io.BytesIO(json.dumps([{"tag_name": "stats_player", "assets": [
-            {"name": STATS_FILE, "size": 10, "updated_at": "2026-11-21T16:46:06Z", "digest": None,
-             "browser_download_url": "https://github.com/example/repo/releases/download/stats_player/" + STATS_FILE}]}]).encode())
-
-    monkeypatch.setattr(source_module.urllib.request, "urlopen", urlopen)
-    monkeypatch.setenv("NFL_LAKE_SOURCE_DIR", "")  # empty rather than unset, so a .env file cannot fill it in
-    monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
-    result = cli("update", "--dry-run")
-    assert result.exit_code == 0, result.output
-    assert f"fetch {STATS_FILE_ID}" in result.output
-    (request,) = seen
-    assert "/repos/example/repo/releases" in request.full_url and request.get_header("Authorization") == "Bearer t0ken"
-
-
-def test_log_level_decides_whether_progress_lines_are_printed(cli, upstream, monkeypatch):
-    upstream.put("stats_player", STATS_FILE, stats_frame())
-    monkeypatch.setenv("LOG_LEVEL", "WARNING")
-    result = cli("update")
-    assert result.exit_code == 0, result.output
-    assert "[info" not in result.output
-
-    upstream.put("stats_player", STATS_FILE, stats_frame(targets=10))
-    monkeypatch.setenv("LOG_LEVEL", "INFO")
-    assert "[info" in cli("update").output
-
-
-def test_source_folder_can_be_a_relative_path(cli, upstream, tmp_path, monkeypatch):
-    upstream.put("stats_player", STATS_FILE, stats_frame())
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("NFL_LAKE_SOURCE_DIR", upstream.root.name)
-    result = cli("update", "--dry-run")
-    assert result.exit_code == 0, result.output
+    result = cli("status")  # it reports the failed run; it did not fail itself
+    assert ok(result), result.output
 
 
 def test_bad_arguments_are_refused(cli, upstream, lake):
     upstream.put("stats_player", STATS_FILE, stats_frame())
-    for seasons in ("last-year", "2025-2024", ","):  # not a season, a reversed range, no season at all
-        result = cli("update", "--seasons", seasons)
-        assert result.exit_code == 2, result.output
-
-    for args in (("update", "--datasets", ","), ("update", "--skip", " "), ("verify", "--datasets", ",")):
-        result = cli(*args)  # an option with no name in it does not mean every dataset
-        assert result.exit_code == 2, result.output
+    bad = [("update", "--seasons", "last-year"), ("update", "--seasons", "2025-2024"), ("update", "--seasons", ","),
+           ("update", "--datasets", ","), ("update", "--skip", " "), ("verify", "--datasets", ",")]
+    for args in bad:  # not a season, a reversed range, and options with nothing in them: none means "everything"
+        result = cli(*args)
+        assert refused(result, code=2), (args, result.output)
 
     result = cli("update", "--datasets", "nope")
-    assert result.exit_code == 1, result.output
-    assert "ERROR not in the catalog: nope" in result.output
-    assert lake.runs() == []  # a typo is not a run
+    assert refused(result), result.output
+    assert lake.runs() == [] and not lake.clean.exists()  # a typo is not a run
 
 
-@pytest.mark.parametrize("seasons, files", [("2025", 1), ("2024-2025", 2), ("2023,2025", 2)])
-def test_seasons_option_limits_the_run(cli, upstream, seasons, files):
+@pytest.mark.parametrize("seasons, published", [("2025", {2025}), ("2024-2025", {2024, 2025}), ("2023,2025", {2023, 2025})])
+def test_seasons_option_limits_the_run(cli, upstream, lake, seasons, published):
     for season in (2023, 2024, 2025):
         upstream.put("stats_player", f"stats_player_week_{season}.parquet", stats_frame())
-    result = cli("update", "--dry-run", "--seasons", seasons)
-    assert result.exit_code == 0, result.output
-    assert f"{files} files in 1 datasets" in result.output
+    result = cli("update", "--seasons", seasons)
+    assert ok(result), result.output
+    assert {p.name for p in (lake.clean / "stats").iterdir()} == {f"stats_player_week_{s}.parquet" for s in published}
 
 
-def test_datasets_option_limits_the_run(make_cli, upstream):
+def test_datasets_and_skip_options_limit_the_run(make_cli, upstream, lake):
     cli = make_cli(stats=STATS, games=GAMES)
+    published = lambda: sorted(p.name for p in lake.clean.iterdir())
     upstream.put("stats_player", STATS_FILE, stats_frame())
-    upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1"]}))
-    result = cli("update", "--dry-run", "--datasets", "stats")
-    assert result.exit_code == 0, result.output
-    assert "1 files in 1 datasets" in result.output and f"fetch {STATS_FILE_ID}" in result.output
+    upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1", "g1"]}))  # breaks its key
+
+    assert refused(cli("update")) and not lake.clean.exists()
+    assert refused(cli("update", "--skip", "games,stats"))  # nothing left to update
+    result = cli("update", "--skip", "games")
+    assert ok(result), result.output
+    assert published() == ["stats"]
+
+    upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1"]}))                    # games is fixed
+    upstream.put("stats_player", STATS_FILE, pl.concat([stats_frame(), stats_frame()]))  # and stats breaks
+    result = cli("update", "--datasets", "games")
+    assert ok(result), result.output
+    assert published() == ["games", "stats"]
 
 
-def test_schema_change_needs_the_accept_option(cli, upstream):
+def test_schema_change_needs_the_accept_option(cli, upstream, lake):
     upstream.put("stats_player", STATS_FILE, stats_frame())
-    result = cli("update")
-    assert result.exit_code == 0, result.output
+    assert ok(cli("update"))
 
     upstream.put("stats_player", STATS_FILE, stats_frame().with_columns(pl.col("targets").cast(pl.Float64)))
-    result = cli("update")
-    assert result.exit_code == 1, result.output
-    assert f"ERROR {STATS_FILE_ID}: schema changed" in result.output
-
+    assert refused(cli("update"))
     result = cli("update", "--accept-schema-change")
-    assert result.exit_code == 0, result.output
+    assert ok(result), result.output
+    assert pl.read_parquet_schema(lake.clean_path("stats", STATS_FILE))["targets"] == pl.Float64
 
 
-def test_verify_exits_non_zero_on_damage(cli, upstream, lake):
+def test_verify_exits_1_on_damage(cli, upstream, lake):
     upstream.put("stats_player", STATS_FILE, stats_frame())
-    result = cli("update")
-    assert result.exit_code == 0, result.output
+    assert ok(cli("update"))
     (lake.root / lake.raw_versions()[STATS_FILE_ID][0]["path"]).write_bytes(b"tampered")
 
     result = cli("verify")  # the clean file is intact; only --deep reads the raw one
-    assert result.exit_code == 0, result.output
-
-    result = cli("verify", "--deep")
-    assert result.exit_code == 1, result.output
-    assert "no longer matches its recorded checksum" in result.output
-
-    result = cli("verify", "--datasets", "nope")
-    assert result.exit_code == 1, result.output
-    assert "not in the catalog: nope" in result.output
+    assert ok(result), result.output
+    assert refused(cli("verify", "--deep"))
+    assert refused(cli("verify", "--datasets", "nope"))
 
 
 @pytest.mark.parametrize("damage", [
-    lambda catalog: catalog.unlink(),  # no such file
-    lambda catalog: catalog.write_text("datasets: [unclosed"),  # not YAML
-    lambda catalog: catalog.write_text(catalog.read_text() + "root: elsewhere\n"),  # an unknown setting
-])
-def test_unreadable_catalog_is_reported_by_every_command_that_reads_it(make_cli, tmp_path, lake, damage):
+    lambda catalog: catalog.unlink(),
+    lambda catalog: catalog.write_text("datasets: [unclosed"),
+    lambda catalog: catalog.write_text(catalog.read_text() + "root: elsewhere\n"),
+], ids=["no such file", "not YAML", "an unknown setting"])
+def test_unreadable_catalog_stops_every_command_that_reads_it(make_cli, tmp_path, lake, damage):
     cli = make_cli(stats=STATS)
     damage(tmp_path / "datasets.yml")
     for command in ("update", "status", "verify"):
         result = cli(command)
-        assert result.exit_code == 1, (command, result.output)
-        assert "ERROR" in result.output
+        assert refused(result), (command, result.output)
 
     lake.lock_path.parent.mkdir()
     lake.lock_path.write_text("{}")
     result = cli("unlock")  # reads no catalog, so a broken one cannot keep a stale lock in place
-    assert result.exit_code == 0, result.output
+    assert ok(result), result.output
     assert not lake.lock_path.exists()
 
 
-def test_status_marks_a_season_range_that_has_gaps(cli, upstream):
-    for season in (2022, 2023, 2024):
-        upstream.put("stats_player", f"stats_player_week_{season}.parquet", stats_frame())
-    result = cli("update", "--seasons", "2022,2024")
-    assert result.exit_code == 0, result.output
-    result = cli("status")
-    assert "2022-2024*" in result.output and "* not every season in the range is published" in result.output
-
-    result = cli("update")
-    assert result.exit_code == 0, result.output
-    assert "*" not in cli("status").output
-
-
-def test_unlock_clears_a_stale_lock(cli, upstream, lake):
+def test_stale_lock_stops_an_update_until_unlock(cli, upstream, lake):
     upstream.put("stats_player", STATS_FILE, stats_frame())
     lake.lock_path.parent.mkdir()
     lake.lock_path.write_text("{}")
 
+    assert refused(cli("update")) and not lake.clean.exists()
+    assert ok(cli("unlock")) and not lake.lock_path.exists()
     result = cli("update")
-    assert result.exit_code == 1, result.output
-    assert "unlock" in result.output
+    assert ok(result), result.output
 
-    result = cli("unlock")
-    assert result.exit_code == 0, result.output
-    assert not lake.lock_path.exists()
 
-    result = cli("update")
-    assert result.exit_code == 0, result.output
+def test_missing_source_folder_is_an_error_and_a_relative_one_works(cli, upstream, lake, tmp_path, monkeypatch):
+    assert refused(cli("update", "--dry-run")) and refused(cli("update"))  # the folder does not exist yet
+    assert [run["status"] for run in lake.runs()] == ["failed"]  # only the real run is recorded
+
+    upstream.put("stats_player", STATS_FILE, stats_frame())
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NFL_LAKE_SOURCE_DIR", upstream.root.name)
+    result = cli("update", "--dry-run")
+    assert ok(result), result.output

@@ -29,5 +29,5 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Tests import `nfl_lake` from the repo root and the inventory helper from its scripts folder.
-pythonpath = [".", "scripts/source_inventory"]
+# Tests import `nfl_lake` from the repo root.
+pythonpath = ["."]
