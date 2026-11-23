@@ -101,7 +101,10 @@ def test_seasons_option_limits_the_run(cli, upstream, lake, seasons_arg, expecte
 
 def test_datasets_and_skip_options_limit_the_run(make_cli, upstream, lake):
     cli = make_cli(stats=STATS_DATASET_SPEC, games=GAMES_DATASET_SPEC)
-    published_datasets = lambda: sorted(path.name for path in lake.clean_dir.iterdir())
+
+    def published_datasets():
+        return sorted(path.name for path in lake.clean_dir.iterdir())
+
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
     upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1", "g1"]}))  # breaks its key
 

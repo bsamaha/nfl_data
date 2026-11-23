@@ -11,7 +11,7 @@ SINGLE_FILE_SPEC = {"release": "r", "file": "f.parquet", "key": ["a"]}
 
 def test_repo_catalog_loads_and_no_two_datasets_read_the_same_file():
     catalog = load_catalog(Path(__file__).parents[1] / "catalog" / "datasets.yml")
-    upstream_sources = [(dataset.spec.release, dataset.spec.file) for dataset in catalog.select_datasets()]
+    upstream_sources = [(dataset.release, dataset.file) for dataset in catalog.select_datasets()]
     assert len(set(upstream_sources)) == len(upstream_sources), "two datasets read the same upstream file"
 
 

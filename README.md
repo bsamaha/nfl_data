@@ -6,7 +6,7 @@ A local lake of the public nflverse files: Parquet on disk, queried with DuckDB 
 
 The rebuild steps, in order:
 
-1. Source inventory (done): `docs/SOURCE_INVENTORY.md`, produced by `scripts/source_inventory/`.
+1. Source inventory (done): `docs/SOURCE_INVENTORY.md`.
 2. Clean project (done).
 3. Ingest (done): the `nfl_lake` package described below.
 4. Core tables (proposed in `docs/SOURCE_INVENTORY.md`).

@@ -9,7 +9,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import NoReturn
 
-import structlog
 import typer
 import yaml
 from dotenv import load_dotenv
@@ -20,24 +19,22 @@ from .source import GitHubReleasesSource, LocalDirSource, SourceError, UpstreamS
 from .store import LakeLocked, LakeStore
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Ingest nflverse files into the local lake.")
-_cli_options: dict[str, str] = {}
 
 
 @app.callback()
-def configure_cli(catalog: str = typer.Option("catalog/datasets.yml", help="Path to the dataset catalog.")) -> None:
-    _cli_options["catalog"] = catalog
+def configure_cli(
+    ctx: typer.Context,
+    catalog: str = typer.Option("catalog/datasets.yml", help="Path to the dataset catalog."),
+) -> None:
+    ctx.obj = catalog
     load_dotenv()
     log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
-    structlog.configure(
-        processors=[
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="%H:%M:%S"),
-            structlog.dev.ConsoleRenderer(colors=False),
-        ],
-        wrapper_class=structlog.make_filtering_bound_logger(log_level),
-        # Looked up on every call, so progress goes to whatever stderr is at that moment.
-        logger_factory=lambda *args: structlog.PrintLogger(file=sys.stderr),
-    )
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+    lake_logger = logging.getLogger("nfl_lake")
+    lake_logger.handlers = [handler]
+    lake_logger.setLevel(log_level)
+    lake_logger.propagate = False
 
 
 def _open_lake() -> LakeStore:
@@ -45,16 +42,12 @@ def _open_lake() -> LakeStore:
     return LakeStore(os.getenv("NFL_LAKE_ROOT") or "data")
 
 
-def _load_runtime_context() -> tuple[Catalog, LakeStore, UpstreamSource]:
-    """Catalog, lake store and upstream source. NFL_LAKE_SOURCE_DIR reads a local mirror instead of GitHub."""
-    catalog = load_catalog(_cli_options["catalog"])
+def _open_source(catalog: Catalog) -> UpstreamSource:
+    """Upstream source: NFL_LAKE_SOURCE_DIR reads a local mirror instead of GitHub."""
     local_source_dir = os.getenv("NFL_LAKE_SOURCE_DIR")
-    source: UpstreamSource
     if local_source_dir:
-        source = LocalDirSource(local_source_dir)
-    else:
-        source = GitHubReleasesSource(catalog.source.repo, token=os.getenv("GITHUB_TOKEN") or None)
-    return catalog, _open_lake(), source
+        return LocalDirSource(local_source_dir)
+    return GitHubReleasesSource(catalog.source.repo, token=os.getenv("GITHUB_TOKEN") or None)
 
 
 def _parse_dataset_names(raw_value: str | None) -> list[str] | None:
@@ -112,6 +105,7 @@ def _handle_cli_errors() -> Iterator[None]:
 
 @app.command()
 def update(
+    ctx: typer.Context,
     datasets: str | None = typer.Option(None, help="Comma-separated dataset names. Default: every dataset."),
     skip: str | None = typer.Option(
         None, help="Comma-separated dataset names to leave out, e.g. one that is broken upstream."
@@ -130,19 +124,18 @@ def update(
     The first run downloads everything. Later runs download only files whose upstream checksum changed.
     """
     with _handle_cli_errors():
-        catalog, lake, source = _load_runtime_context()
-        selected_dataset_names = _parse_dataset_names(datasets)
+        catalog = load_catalog(ctx.obj)
+        lake = _open_lake()
+        source = _open_source(catalog)
         selected_datasets = catalog.select_datasets(
-            selected_dataset_names
-        )  # unknown names stop before listing upstream
-        skipped_dataset_names = _parse_dataset_names(skip)
-        if skipped_dataset_names is not None:
-            catalog.select_datasets(skipped_dataset_names)  # an unknown name is an error here too
-            selected_dataset_names = [
-                dataset.name for dataset in selected_datasets if dataset.name not in skipped_dataset_names
-            ]
-            if not selected_dataset_names:
-                raise ValueError("--skip leaves no dataset to update")
+            _parse_dataset_names(datasets),
+            exclude_names=_parse_dataset_names(skip),
+        )
+        if skip is not None and not selected_datasets:
+            raise ValueError("--skip leaves no dataset to update")
+        selected_dataset_names = (
+            None if datasets is None and skip is None else [dataset.name for dataset in selected_datasets]
+        )
         summary = run_update(
             catalog,
             source,
@@ -186,10 +179,11 @@ def update(
 
 
 @app.command()
-def status() -> None:
+def status(ctx: typer.Context) -> None:
     """Show what is published per dataset, and how the last run ended."""
     with _handle_cli_errors():
-        catalog, lake, _ = _load_runtime_context()
+        catalog = load_catalog(ctx.obj)
+        lake = _open_lake()
         lake_status = get_lake_status(catalog, lake)
         typer.echo(f"lake: {lake.root_dir.resolve()}")
         typer.echo(
@@ -218,12 +212,14 @@ def status() -> None:
 
 @app.command()
 def verify(
+    ctx: typer.Context,
     datasets: str | None = typer.Option(None, help="Comma-separated dataset names. Default: every dataset."),
     deep: bool = typer.Option(False, "--deep", help="Also re-hash each raw file against the manifest."),
 ) -> None:
     """Re-check every published file: present, expected row count, key unique and non-null."""
     with _handle_cli_errors():
-        catalog, lake, _ = _load_runtime_context()
+        catalog = load_catalog(ctx.obj)
+        lake = _open_lake()
         verification = verify_lake(catalog, lake, _parse_dataset_names(datasets), deep)
         if verification.errors:
             _exit_with_errors(verification.errors)

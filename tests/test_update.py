@@ -63,7 +63,10 @@ def test_first_run_publishes_and_an_identical_second_run_changes_nothing(upstrea
 def test_correction_replaces_the_clean_file_and_history_decides_which_raw_versions_stay(upstream, lake):
     # stats keeps the default history, latest; that default is what this test checks for stats
     catalog = build_catalog(stats=STATS_DATASET_SPEC, games={**GAMES_DATASET_SPEC, "history": "all"})
-    make_games_frame = lambda spread: pl.DataFrame({"game_id": ["2024_01_BUF_MIA"], "spread_line": [spread]})
+
+    def make_games_frame(spread):
+        return pl.DataFrame({"game_id": ["2024_01_BUF_MIA"], "spread_line": [spread]})
+
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame(targets=8))
     upstream.put("schedules", "games.parquet", make_games_frame(3.0))
     run_update(catalog, upstream.source, lake)
@@ -102,7 +105,10 @@ def test_bad_file_fails_the_run_and_keeps_the_published_version(upstream, lake):
 
 def test_one_bad_file_blocks_every_publish_in_the_run(upstream, lake):
     catalog = build_catalog(stats=STATS_DATASET_SPEC, games=GAMES_DATASET_SPEC)
-    make_games_frame = lambda *game_ids: pl.DataFrame({"game_id": list(game_ids)})
+
+    def make_games_frame(*game_ids):
+        return pl.DataFrame({"game_id": list(game_ids)})
+
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame(8))
     upstream.put("schedules", "games.parquet", make_games_frame("g1"))
     run_update(catalog, upstream.source, lake)
@@ -194,12 +200,15 @@ def test_keep_last_by_resolves_a_repeated_key(upstream, lake):
 
 def test_file_that_lost_more_rows_than_the_limit_is_refused(upstream, lake):
     catalog = build_catalog(stats=STATS_DATASET_SPEC)
-    make_rows = lambda row_count: pl.DataFrame(
-        {
-            "player_id": [f"p{index:03}" for index in range(row_count)],
-            "game_id": ["g1"] * row_count,
-        }
-    )
+
+    def make_rows(row_count):
+        return pl.DataFrame(
+            {
+                "player_id": [f"p{index:03}" for index in range(row_count)],
+                "game_id": ["g1"] * row_count,
+            }
+        )
+
     upstream.put("stats_player", STATS_FILENAME, make_rows(100))
     run_update(catalog, upstream.source, lake)
 

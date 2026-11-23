@@ -4,7 +4,7 @@ Checked on 21 Nov 2026 (week 11 of the 2026 season) against the public `nflverse
 
 ## How this was checked
 
-The file listing comes from the GitHub releases API. Schemas come from the Parquet footer of every file `probe_schemas.py` lists, read remotely. Keys were tested for duplicates and nulls in every season read, and each `game_id` was matched against the schedule; the exceptions are noted in the table and in each section. Stat definitions were not reconciled against play-by-play, and update timing was observed on one day only. The scripts are in `scripts/source_inventory/`; its README gives the run order and cost.
+The file listing comes from the GitHub releases API. Schemas come from the Parquet footers of each release file, read remotely. Keys were tested for duplicates and nulls in every season read, and each `game_id` was matched against the schedule; the exceptions are noted in the table and in each section. Stat definitions were not reconciled against play-by-play, and update timing was observed on one day only.
 
 ## What matters most
 

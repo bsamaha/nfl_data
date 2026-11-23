@@ -83,12 +83,6 @@ class LakeStore:
         """Raw versions the manifest records as stored and not pruned, per file_id, oldest first."""
         versions_by_file_id: dict[str, list[dict]] = {}
         for event in self._read_jsonl_records("raw_files.jsonl"):
-            if "file_id" not in event:
-                raise ValueError(
-                    f"{self.manifest_dir / 'raw_files.jsonl'} has entries without `file_id`: this lake was "
-                    "written when the field was called `key`. Rename the field in that file, or delete "
-                    "the lake and run update again."
-                )
             active_versions = [
                 existing
                 for existing in versions_by_file_id.get(event["file_id"], [])

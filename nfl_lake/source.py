@@ -10,6 +10,7 @@ import hashlib
 import http.client
 import json
 import shutil
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -36,6 +37,21 @@ class ListingMismatch(SourceError):
     The usual cause is that upstream replaced the file after the listing was made, so the run lists again
     before it gives up.
     """
+
+
+class _TruncatedDownloadError(Exception):
+    """Raised when an HTTP response body ends before its declared byte length."""
+
+
+# Network, TLS, and HTTP 5xx errors that warrant retrying; excludes local filesystem OSErrors.
+_RETRYABLE_ERRORS = (
+    urllib.error.URLError,
+    ConnectionError,
+    TimeoutError,
+    ssl.SSLError,
+    http.client.HTTPException,
+    _TruncatedDownloadError,
+)
 
 
 @dataclass(frozen=True)
@@ -83,13 +99,13 @@ class GitHubReleasesSource:
     def _retry_transient_errors(self, operation: str, action: Callable[[], ResultT]) -> ResultT:
         """Run `action` up to `max_attempts` times.
 
-        Server errors and failed connections are retried; rate limits and 4xx are not.
+        Server errors and failed connections are retried; rate limits, 4xx, and local disk errors are not.
         """
         last_error: Exception | None = None
         for attempt_number in range(1, self.max_attempts + 1):
             try:
                 return action()
-            except (OSError, http.client.HTTPException) as error:  # includes HTTP 5xx, timeouts and dropped connections
+            except _RETRYABLE_ERRORS as error:
                 last_error = error
                 if attempt_number < self.max_attempts:
                     time.sleep(self.backoff_seconds * attempt_number)
@@ -106,7 +122,8 @@ class GitHubReleasesSource:
                     datetime.fromtimestamp(int(reset_epoch), UTC).strftime("%H:%M UTC") if reset_epoch else "later"
                 )
                 raise SourceError(
-                    f"GitHub API rate limit reached while {operation}. Retry after {reset_time_utc}, or set GITHUB_TOKEN."
+                    f"GitHub API rate limit reached while {operation}. "
+                    f"Retry after {reset_time_utc}, or set GITHUB_TOKEN."
                 ) from http_error
             if http_error.code < 500:
                 raise SourceError(f"HTTP {http_error.code} while {operation}") from http_error
@@ -145,13 +162,12 @@ class GitHubReleasesSource:
             page += 1
 
     def fetch(self, asset: UpstreamAsset, dest_path: Path) -> None:
+        dest_path = Path(dest_path)
+        if not dest_path.parent.is_dir():
+            raise SourceError(f"cannot write {dest_path}: folder {dest_path.parent} does not exist")
         # No token here: the download is public and redirects to another host.
         request = urllib.request.Request(asset.download_url, headers={"User-Agent": USER_AGENT})
         operation = f"downloading {asset.filename}"
-        try:
-            Path(dest_path).touch()
-        except OSError as error:  # a local problem, which trying the download again would not fix
-            raise SourceError(f"cannot write {dest_path}: {error}") from error
 
         def download_once() -> None:
             with self._open_request(request, operation) as response, open(dest_path, "wb") as output_file:
@@ -161,9 +177,12 @@ class GitHubReleasesSource:
                 received_bytes = output_file.tell()
             expected_bytes = int(declared_length) if declared_length else asset.size_bytes
             if received_bytes < expected_bytes:  # http.client returns a body that ended early without raising
-                raise OSError(f"body ended after {received_bytes} of {expected_bytes} bytes")
+                raise _TruncatedDownloadError(f"body ended after {received_bytes} of {expected_bytes} bytes")
 
-        self._retry_transient_errors(operation, download_once)
+        try:
+            self._retry_transient_errors(operation, download_once)
+        except OSError as error:  # local filesystem error; network errors are handled inside _retry_transient_errors
+            raise SourceError(f"cannot write {dest_path}: {error}") from error
 
 
 class LocalDirSource:

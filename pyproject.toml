@@ -9,7 +9,6 @@ dependencies = [
     "python-dotenv>=1.2",
     "pydantic>=2.14,<3",
     "pyyaml>=6.0",
-    "structlog>=26.1",
     # Storage and query
     "polars>=2.1,<3",
     "pyarrow>=26",

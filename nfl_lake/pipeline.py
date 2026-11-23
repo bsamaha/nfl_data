@@ -16,7 +16,9 @@ finishes it. A dry run and a held lock record nothing.
 from __future__ import annotations
 
 import concurrent.futures as concurrent_futures
+import contextlib
 import dataclasses
+import logging
 import os
 import shutil
 import time
@@ -27,14 +29,13 @@ from typing import NamedTuple
 
 import polars as pl
 import pyarrow.parquet as pq
-import structlog
 
 from .catalog import Catalog, Dataset
 from .contract import ContractError, build_clean, count_key_violations
 from .source import ListingMismatch, SourceError, UpstreamAsset, UpstreamListing, UpstreamSource, compute_file_sha256
 from .store import LakeStore, format_utc_iso, utc_now
 
-logger = structlog.get_logger("nfl_lake")
+logger = logging.getLogger("nfl_lake")
 # How many times a run lists upstream again when a download does not match the listing: straight away, then twice
 # more after waiting the source's `listing_lag_seconds`.
 LISTING_RECHECKS = 3
@@ -125,19 +126,17 @@ def plan_ingest_targets(
     targets: list[IngestTarget] = []
     errors: list[str] = []
     for dataset in catalog.select_datasets(dataset_names):
-        release_assets = listing.get(dataset.spec.release)
+        release_assets = listing.get(dataset.release)
         if release_assets is None:
-            errors.append(f"{dataset.name}: upstream has no release named {dataset.spec.release!r}")
+            errors.append(f"{dataset.name}: upstream has no release named {dataset.release!r}")
             continue
         matched_assets: list[tuple[UpstreamAsset, int | None]] = []
         for asset in release_assets.values():
             is_match, season = dataset.match_asset_filename(asset.filename)
-            if is_match and (season is None or season >= dataset.spec.min_season):
+            if is_match and (season is None or season >= dataset.min_season):
                 matched_assets.append((asset, season))
         if not matched_assets:
-            errors.append(
-                f"{dataset.name}: no upstream file matches {dataset.spec.file!r} in release {dataset.spec.release!r}"
-            )
+            errors.append(f"{dataset.name}: no upstream file matches {dataset.file!r} in release {dataset.release!r}")
             continue
         selected_filenames = {asset.filename for asset, _ in matched_assets}
         published_filenames = sorted(
@@ -201,7 +200,7 @@ def _fetch_one_target(
     staging_dir: Path,
     run_id: str,
 ) -> dict:
-    """Runs in a worker thread. Shared parent folders already exist; see _execute_update."""
+    """Runs in a worker thread. Shared parent folders already exist; see _fetch_targets."""
     staged_raw_path = staging_dir / "raw" / target.dataset.name / target.asset.filename
     source.fetch(target.asset, staged_raw_path)
     downloaded_bytes = staged_raw_path.stat().st_size
@@ -255,6 +254,8 @@ def _fetch_targets(
     Returns (errors, mismatched). `mismatched` pairs each target whose download did not match the listing
     with what differed.
     """
+    if not targets_to_fetch:
+        return [], []
     errors: list[str] = []
     mismatched: list[tuple[IngestTarget, str]] = []
     # The folders that workers share are made here: threads creating one folder at the same moment can fail on Windows.
@@ -272,16 +273,66 @@ def _fetch_targets(
                 raw_file_record = future.result()
             except ListingMismatch as mismatch:
                 mismatched.append((target, str(mismatch)))
-                logger.warning("listing_mismatch", file=target.file_id, detail=str(mismatch))
+                logger.warning("listing mismatch for %s: %s", target.file_id, mismatch)
             except Exception as error:  # noqa: BLE001 - whatever stops one file is reported and the others go on
                 errors.append(f"{target.file_id}: {error}")
-                logger.error("fetch_failed", file=target.file_id, error=str(error))
+                logger.error("fetch failed for %s: %s", target.file_id, error)
             else:
                 lake.append_raw_file_event(raw_file_record)  # recorded even if another file fails, avoiding re-fetches
                 summary.fetched_file_ids.append(target.file_id)
                 summary.bytes_fetched += raw_file_record["size"]
-                logger.info("fetched", file=target.file_id, rows=raw_file_record["rows"])
+                logger.info("fetched %s (%d rows)", target.file_id, raw_file_record["rows"])
     return errors, mismatched
+
+
+def _fetch_with_rechecks(
+    source: UpstreamSource,
+    lake: LakeStore,
+    targets: list[IngestTarget],
+    targets_to_fetch: list[IngestTarget],
+    staging_dir: Path,
+    summary: UpdateSummary,
+    workers: int,
+) -> list[IngestTarget]:
+    """Phase 1: download changed files, re-listing upstream if a file was replaced mid-run."""
+    megabytes = sum(target.asset.size_bytes for target in targets_to_fetch) / 1e6
+    logger.info("fetching %d file(s) (%.1f MB)", len(targets_to_fetch), megabytes)
+    errors, mismatched = _fetch_targets(source, lake, targets_to_fetch, staging_dir, summary, workers)
+    refreshed_by_file_id: dict[str, IngestTarget] = {}
+
+    # A download that does not match the listing usually means upstream replaced the file after the listing was
+    # made. List again and fetch what the new listing describes. Where the listing has not changed, give it time
+    # to catch up before calling the download bad.
+    for recheck in range(LISTING_RECHECKS):
+        if errors or not mismatched:
+            break
+        if recheck:
+            logger.info(
+                "waiting %.0fs for listing to catch up (%d file(s))", source.listing_lag_seconds, len(mismatched)
+            )
+            time.sleep(source.listing_lag_seconds)
+        fresh_listing = source.list_assets()
+        relisted: list[IngestTarget] = []
+        unchanged: list[tuple[IngestTarget, str]] = []
+        for target, mismatch in mismatched:
+            fresh_asset = fresh_listing.get(target.asset.release_tag, {}).get(target.asset.filename)
+            if fresh_asset is not None and fresh_asset != target.asset:
+                updated_target = dataclasses.replace(target, asset=fresh_asset)
+                relisted.append(updated_target)
+                refreshed_by_file_id[updated_target.file_id] = updated_target
+            else:
+                unchanged.append((target, mismatch))
+        more_errors, mismatched_again = _fetch_targets(source, lake, relisted, staging_dir, summary, workers)
+        errors += more_errors
+        mismatched = unchanged + mismatched_again
+        if not source.listing_lag_seconds:  # this source's listing is always current, so waiting would change nothing
+            break
+
+    errors += [f"{target.file_id}: {mismatch}" for target, mismatch in mismatched]
+    summary.fetched_file_ids.sort()
+    if errors:
+        raise UpdateFailed(sorted(errors))
+    return [refreshed_by_file_id.get(target.file_id, target) for target in targets]
 
 
 def _build_one_target(
@@ -326,6 +377,101 @@ def _build_one_target(
     return StagedCleanFile(target, staged_clean_path, staged_rejects_path, clean_state_entry, build_result.notes)
 
 
+def _build_staged_files(
+    lake: LakeStore,
+    targets: list[IngestTarget],
+    raw_versions_by_file: dict[str, list[dict]],
+    clean_state: dict[str, dict],
+    staging_dir: Path,
+    accept_schema_change: bool,
+) -> list[StagedCleanFile]:
+    """Phase 2: rebuild every target whose raw copy or contract changed into staging."""
+    staged_files: list[StagedCleanFile] = []
+    errors: list[str] = []
+    for target in targets:
+        if not _needs_rebuild(target, raw_versions_by_file, clean_state, lake):
+            continue
+        try:
+            staged_file = _build_one_target(
+                lake,
+                target,
+                raw_versions_by_file[target.file_id][-1],
+                clean_state.get(target.file_id),
+                staging_dir,
+                accept_schema_change,
+            )
+            staged_files.append(staged_file)
+            logger.info("built %s (%d rows)", target.file_id, staged_file.clean_state_entry["rows"])
+        except ContractError as error:
+            errors.append(f"{target.file_id}: {error}")
+            logger.error("contract failed for %s: %s", target.file_id, error)
+    if errors:
+        raise UpdateFailed(errors)
+    return staged_files
+
+
+def _publish_staged_files(
+    lake: LakeStore,
+    staged_files: list[StagedCleanFile],
+    clean_state: dict[str, dict],
+    summary: UpdateSummary,
+    published_at: str,
+) -> None:
+    """Phase 3: move staged files into rejects/ and clean/, keeping clean_state.json in sync."""
+    try:
+        for staged_file in staged_files:
+            target = staged_file.target
+            # The rejects file goes first, so a file counts as published only once its clean copy is in place.
+            final_rejects_path = lake.rejects_file_path(target.dataset.name, target.asset.filename)
+            if staged_file.staged_rejects_path:
+                final_rejects_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staged_file.staged_rejects_path, final_rejects_path)
+            else:
+                final_rejects_path.unlink(missing_ok=True)
+            final_clean_path = lake.clean_file_path(target.dataset.name, target.asset.filename)
+            final_clean_path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staged_file.staged_clean_path, final_clean_path)
+            clean_state[target.file_id] = {
+                **staged_file.clean_state_entry,
+                "built_at": published_at,
+                "run_id": summary.run_id,
+            }
+            summary.rebuilt_file_ids.append(target.file_id)
+            if staged_file.clean_state_entry["rejected_rows"]:
+                summary.rejected_rows_by_file[target.file_id] = staged_file.clean_state_entry["rejected_rows"]
+            if staged_file.clean_state_entry["deduped_rows"]:
+                summary.deduped_rows_by_file[target.file_id] = staged_file.clean_state_entry["deduped_rows"]
+            summary.notes += [f"{target.file_id}: {note}" for note in staged_file.notes]
+    finally:
+        if summary.rebuilt_file_ids:  # also after a failure part-way, so clean/ and its record agree
+            lake.save_clean_state(clean_state)
+
+
+def _prune_old_raw_files(
+    lake: LakeStore,
+    targets: list[IngestTarget],
+    raw_versions_by_file: dict[str, list[dict]],
+    summary: UpdateSummary,
+    pruned_at: str,
+) -> None:
+    """Remove superseded raw copies for datasets that keep only the latest raw version."""
+    for target in targets:
+        if target.dataset.history != "latest":
+            continue
+        for obsolete_raw in raw_versions_by_file.get(target.file_id, [])[:-1]:
+            (lake.root_dir / obsolete_raw["path"]).unlink(missing_ok=True)
+            lake.append_raw_file_event(
+                {
+                    "event": "pruned",
+                    "file_id": target.file_id,
+                    "path": obsolete_raw["path"],
+                    "run_id": summary.run_id,
+                    "pruned_at": pruned_at,
+                }
+            )
+            summary.pruned_raw_count += 1
+
+
 def _execute_update(
     catalog: Catalog,
     source: UpstreamSource,
@@ -359,109 +505,14 @@ def _execute_update(
         summary.unchanged_file_count = len(targets) - len(summary.rebuilt_file_ids)
         return
 
-    # 1. fetch
-    logger.info(
-        "fetching",
-        files=len(targets_to_fetch),
-        megabytes=round(sum(target.asset.size_bytes for target in targets_to_fetch) / 1e6, 1),
-    )
-    errors, mismatched = _fetch_targets(source, lake, targets_to_fetch, staging_dir, summary, workers)
-    # A download that does not match the listing usually means upstream replaced the file after the listing was
-    # made. List again and fetch what the new listing describes. Where the listing has not changed, give it time
-    # to catch up before calling the download bad.
-    for recheck in range(LISTING_RECHECKS):
-        if errors or not mismatched:
-            break
-        if recheck:
-            logger.info("waiting_for_listing", seconds=source.listing_lag_seconds, files=len(mismatched))
-            time.sleep(source.listing_lag_seconds)
-        fresh_listing = source.list_assets()
-        relisted: list[IngestTarget] = []
-        unchanged: list[tuple[IngestTarget, str]] = []
-        for target, mismatch in mismatched:
-            fresh_asset = fresh_listing.get(target.asset.release_tag, {}).get(target.asset.filename)
-            if fresh_asset is not None and fresh_asset != target.asset:
-                relisted.append(dataclasses.replace(target, asset=fresh_asset))
-            else:
-                unchanged.append((target, mismatch))
-        more_errors, mismatched_again = _fetch_targets(source, lake, relisted, staging_dir, summary, workers)
-        errors += more_errors
-        mismatched = unchanged + mismatched_again
-        if not source.listing_lag_seconds:  # this source's listing is always current, so waiting would change nothing
-            break
-    errors += [f"{target.file_id}: {mismatch}" for target, mismatch in mismatched]
-    summary.fetched_file_ids.sort()
-    if errors:
-        raise UpdateFailed(sorted(errors))
-
-    # 2. build
+    targets = _fetch_with_rechecks(source, lake, targets, targets_to_fetch, staging_dir, summary, workers)
     raw_versions_by_file = lake.load_raw_versions()
-    staged_files: list[StagedCleanFile] = []
-    for target in targets:
-        if not _needs_rebuild(target, raw_versions_by_file, clean_state, lake):
-            continue
-        try:
-            staged_file = _build_one_target(
-                lake,
-                target,
-                raw_versions_by_file[target.file_id][-1],
-                clean_state.get(target.file_id),
-                staging_dir,
-                accept_schema_change,
-            )
-            staged_files.append(staged_file)
-            logger.info("built", file=target.file_id, rows=staged_file.clean_state_entry["rows"])
-        except ContractError as error:
-            errors.append(f"{target.file_id}: {error}")
-            logger.error("contract_failed", file=target.file_id, error=str(error))
-    if errors:
-        raise UpdateFailed(errors)
-
-    # 3. publish
+    staged_files = _build_staged_files(
+        lake, targets, raw_versions_by_file, clean_state, staging_dir, accept_schema_change
+    )
     published_at = format_utc_iso(utc_now())
-    try:
-        for staged_file in staged_files:
-            target = staged_file.target
-            # The rejects file goes first, so a file counts as published only once its clean copy is in place.
-            final_rejects_path = lake.rejects_file_path(target.dataset.name, target.asset.filename)
-            if staged_file.staged_rejects_path:
-                final_rejects_path.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(staged_file.staged_rejects_path, final_rejects_path)
-            else:
-                final_rejects_path.unlink(missing_ok=True)
-            final_clean_path = lake.clean_file_path(target.dataset.name, target.asset.filename)
-            final_clean_path.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(staged_file.staged_clean_path, final_clean_path)
-            clean_state[target.file_id] = {
-                **staged_file.clean_state_entry,
-                "built_at": published_at,
-                "run_id": summary.run_id,
-            }
-            summary.rebuilt_file_ids.append(target.file_id)
-            if staged_file.clean_state_entry["rejected_rows"]:
-                summary.rejected_rows_by_file[target.file_id] = staged_file.clean_state_entry["rejected_rows"]
-            if staged_file.clean_state_entry["deduped_rows"]:
-                summary.deduped_rows_by_file[target.file_id] = staged_file.clean_state_entry["deduped_rows"]
-            summary.notes += [f"{target.file_id}: {note}" for note in staged_file.notes]
-    finally:
-        if summary.rebuilt_file_ids:  # also after a failure part-way, so clean/ and its record agree
-            lake.save_clean_state(clean_state)
-
-    for target in targets:
-        if target.dataset.spec.history != "latest":
-            continue
-        for obsolete_raw in raw_versions_by_file.get(target.file_id, [])[:-1]:
-            (lake.root_dir / obsolete_raw["path"]).unlink(missing_ok=True)
-            lake.append_raw_file_event(
-                {
-                    "event": "pruned",
-                    "file_id": target.file_id,
-                    "path": obsolete_raw["path"],
-                    "run_id": summary.run_id,
-                    "pruned_at": published_at,
-                }
-            )
-            summary.pruned_raw_count += 1
+    _publish_staged_files(lake, staged_files, clean_state, summary, published_at)
+    _prune_old_raw_files(lake, targets, raw_versions_by_file, summary, published_at)
     summary.unchanged_file_count = len(targets) - len(summary.rebuilt_file_ids)
 
 
@@ -479,11 +530,6 @@ def run_update(
     started_at = utc_now()
     summary = UpdateSummary(run_id=f"run_{started_at:%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:4]}", dry_run=dry_run)
     staging_dir = lake.staging_dir / summary.run_id
-
-    def execute() -> None:
-        _execute_update(
-            catalog, source, lake, summary, staging_dir, dataset_names, season_filter, accept_schema_change, workers
-        )
 
     def record_run(run_status: str, errors: list[str]) -> None:
         lake.append_run_record(
@@ -508,12 +554,16 @@ def run_update(
         )
 
     if dry_run:  # reads only: no lock, no manifest entry
-        execute()
+        _execute_update(
+            catalog, source, lake, summary, staging_dir, dataset_names, season_filter, accept_schema_change, workers
+        )
         return summary
 
     with lake.acquire_lock():
         try:
-            execute()
+            _execute_update(
+                catalog, source, lake, summary, staging_dir, dataset_names, season_filter, accept_schema_change, workers
+            )
         except UpdateFailed as error:
             record_run("failed", error.errors)
             raise
@@ -528,10 +578,8 @@ def run_update(
             record_run("ok", [])
         finally:
             shutil.rmtree(staging_dir, ignore_errors=True)
-            try:
+            with contextlib.suppress(OSError):
                 lake.staging_dir.rmdir()  # only succeeds when empty
-            except OSError:
-                pass
     return summary
 
 

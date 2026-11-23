@@ -9,6 +9,7 @@ accept_schema_change).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -40,11 +41,11 @@ class CleanBuildResult:
         return 0 if self.rejected_frame is None else self.rejected_frame.height
 
 
-def _any_key_is_null_expr(key_columns: list[str]) -> pl.Expr:
+def _any_key_is_null_expr(key_columns: Sequence[str]) -> pl.Expr:
     return pl.any_horizontal([pl.col(col_name).is_null() for col_name in key_columns])
 
 
-def _normalize_blank_key_strings(frame: pl.DataFrame, key_columns: list[str]) -> pl.DataFrame:
+def _normalize_blank_key_strings(frame: pl.DataFrame, key_columns: Sequence[str]) -> pl.DataFrame:
     """Treat an empty string in a string key column as a missing (null) key."""
     string_key_columns = [col_name for col_name in key_columns if frame.schema[col_name] == pl.String]
     if not string_key_columns:
@@ -57,7 +58,7 @@ def _normalize_blank_key_strings(frame: pl.DataFrame, key_columns: list[str]) ->
     )
 
 
-def count_key_violations(frame: pl.DataFrame, key_columns: list[str]) -> KeyViolationCounts:
+def count_key_violations(frame: pl.DataFrame, key_columns: Sequence[str]) -> KeyViolationCounts:
     """Count rows with a null/blank key column, and rows repeating a key among the remaining rows."""
     key_frame = _normalize_blank_key_strings(frame.select(key_columns), key_columns)
     non_null_key_frame = key_frame.filter(~_any_key_is_null_expr(key_columns))
@@ -65,6 +66,106 @@ def count_key_violations(frame: pl.DataFrame, key_columns: list[str]) -> KeyViol
         null_key_rows=key_frame.height - non_null_key_frame.height,
         duplicate_key_rows=non_null_key_frame.height - non_null_key_frame.unique().height,
     )
+
+
+def _enforce_key_rules(raw_frame: pl.DataFrame, dataset: Dataset) -> tuple[pl.DataFrame, pl.DataFrame | None, int]:
+    """Enforce null-key handling and deduplication. Returns (clean_frame, rejected_frame, deduped_count)."""
+    key_columns = dataset.key_columns
+    missing_key_columns = [col_name for col_name in key_columns if col_name not in raw_frame.columns]
+    if missing_key_columns:
+        raise ContractError(f"key column(s) missing from the file: {', '.join(missing_key_columns)}")
+
+    clean_frame = _normalize_blank_key_strings(raw_frame, key_columns)
+    null_key_mask = clean_frame.select(_any_key_is_null_expr(key_columns)).to_series()
+    rejected_frame: pl.DataFrame | None = None
+    if null_key_mask.any():
+        rejected_frame = clean_frame.filter(null_key_mask)
+        if not dataset.reject_null_keys:
+            raise ContractError(
+                f"{rejected_frame.height} row(s) have a null key column ({', '.join(key_columns)}). "
+                "Set reject_null_keys in the catalog if such rows should be set aside."
+            )
+        rejected_row_share = rejected_frame.height / raw_frame.height
+        if rejected_row_share > dataset.max_reject_share:
+            raise ContractError(
+                f"{rejected_frame.height} of {raw_frame.height} rows ({rejected_row_share:.1%}) have a null key, "
+                f"above the {dataset.max_reject_share:.1%} limit"
+            )
+        clean_frame = clean_frame.filter(~null_key_mask)
+
+    deduped_row_count = 0
+    order_column = dataset.keep_last_by
+    if order_column and order_column in clean_frame.columns:
+        row_count_before_dedup = clean_frame.height
+        clean_frame = clean_frame.sort(order_column, nulls_last=False, maintain_order=True).unique(
+            subset=key_columns, keep="last", maintain_order=True
+        )
+        deduped_row_count = row_count_before_dedup - clean_frame.height
+
+    duplicate_key_rows = clean_frame.height - clean_frame.select(key_columns).unique().height
+    if duplicate_key_rows:
+        sample_duplicate_keys = (
+            clean_frame.filter(pl.struct(key_columns).is_duplicated()).select(key_columns).unique().head(3).rows()
+        )
+        unused_rule = ""
+        if order_column and order_column not in clean_frame.columns:
+            unused_rule = f". keep_last_by names {order_column!r}, which this file does not have"
+        raise ContractError(
+            f"{duplicate_key_rows} row(s) repeat a key ({', '.join(key_columns)}), "
+            f"e.g. {sample_duplicate_keys}{unused_rule}"
+        )
+
+    if clean_frame.height == 0:
+        raise ContractError("no rows left to publish")
+
+    return clean_frame.sort(key_columns), rejected_frame, deduped_row_count
+
+
+def _check_against_previous(
+    row_count: int,
+    column_schema: list[list[str]],
+    dataset: Dataset,
+    previous_clean_state: dict,
+    accept_schema_change: bool,
+) -> list[str]:
+    """Compare rebuilt rows and schema against the previously published version. Returns schema notes."""
+    previous_row_count = previous_clean_state["rows"]
+    if row_count < previous_row_count * (1 - dataset.max_row_drop):
+        raise ContractError(
+            f"rows fell from {previous_row_count} to {row_count}, more than the "
+            f"{dataset.max_row_drop:.1%} allowed. Upstream may have published a truncated file."
+        )
+
+    previous_column_types = dict(previous_clean_state["columns"])
+    current_column_types = dict(column_schema)
+    removed_columns = [col_name for col_name in previous_column_types if col_name not in current_column_types]
+    retyped_columns = [
+        f"{col_name} {previous_column_types[col_name]} -> {current_column_types[col_name]}"
+        for col_name in current_column_types
+        if col_name in previous_column_types and previous_column_types[col_name] != current_column_types[col_name]
+    ]
+    added_columns = [col_name for col_name in current_column_types if col_name not in previous_column_types]
+
+    notes: list[str] = []
+    if added_columns:
+        notes.append(f"new column(s) {', '.join(added_columns)}")
+    if removed_columns or retyped_columns:
+        schema_change_summary = "; ".join(
+            filter(
+                None,
+                [
+                    f"removed: {', '.join(removed_columns)}" if removed_columns else "",
+                    f"type changed: {', '.join(retyped_columns)}" if retyped_columns else "",
+                ],
+            )
+        )
+        if not accept_schema_change:
+            raise ContractError(
+                f"schema changed ({schema_change_summary}). Re-run with --accept-schema-change "
+                "once downstream code is ready for it."
+            )
+        notes.append(f"accepted schema change ({schema_change_summary})")
+    return notes
 
 
 def build_clean(
@@ -77,97 +178,17 @@ def build_clean(
 
     `previous_clean_state` is the clean_state.json record of the currently published version, if one exists.
     """
-    key_columns = dataset.key_columns
-    input_row_count = raw_frame.height
-
-    missing_key_columns = [col_name for col_name in key_columns if col_name not in raw_frame.columns]
-    if missing_key_columns:
-        raise ContractError(f"key column(s) missing from the file: {', '.join(missing_key_columns)}")
-
-    clean_frame = _normalize_blank_key_strings(raw_frame, key_columns)
-    rejected_frame = clean_frame.filter(_any_key_is_null_expr(key_columns))
-    if rejected_frame.height:
-        if not dataset.spec.reject_null_keys:
-            raise ContractError(
-                f"{rejected_frame.height} row(s) have a null key column ({', '.join(key_columns)}). "
-                "Set reject_null_keys in the catalog if such rows should be set aside."
-            )
-        rejected_row_share = rejected_frame.height / input_row_count
-        if rejected_row_share > dataset.spec.max_reject_share:
-            raise ContractError(
-                f"{rejected_frame.height} of {input_row_count} rows ({rejected_row_share:.1%}) have a null key, "
-                f"above the {dataset.spec.max_reject_share:.1%} limit"
-            )
-        clean_frame = clean_frame.filter(~_any_key_is_null_expr(key_columns))
-
-    deduped_row_count = 0
-    order_column = dataset.spec.keep_last_by
-    if order_column and order_column in clean_frame.columns:
-        row_count_before_dedup = clean_frame.height
-        clean_frame = clean_frame.sort(order_column, nulls_last=False, maintain_order=True).unique(
-            subset=key_columns, keep="last", maintain_order=True
-        )
-        deduped_row_count = row_count_before_dedup - clean_frame.height
-
-    violations = count_key_violations(clean_frame, key_columns)
-    if violations.duplicate_key_rows:
-        sample_duplicate_keys = (
-            clean_frame.filter(pl.struct(key_columns).is_duplicated()).select(key_columns).unique().head(3).rows()
-        )
-        unused_rule = ""
-        if order_column and order_column not in clean_frame.columns:
-            unused_rule = f". keep_last_by names {order_column!r}, which this file does not have"
-        raise ContractError(
-            f"{violations.duplicate_key_rows} row(s) repeat a key ({', '.join(key_columns)}), "
-            f"e.g. {sample_duplicate_keys}{unused_rule}"
-        )
-
-    if clean_frame.height == 0:
-        raise ContractError("no rows left to publish")
-
-    clean_frame = clean_frame.sort(key_columns)
+    clean_frame, rejected_frame, deduped_row_count = _enforce_key_rules(raw_frame, dataset)
     column_schema = [[col_name, str(dtype)] for col_name, dtype in clean_frame.schema.items()]
-    notes: list[str] = []
-
-    if previous_clean_state:
-        previous_row_count = previous_clean_state["rows"]
-        if clean_frame.height < previous_row_count * (1 - dataset.spec.max_row_drop):
-            raise ContractError(
-                f"rows fell from {previous_row_count} to {clean_frame.height}, more than the "
-                f"{dataset.spec.max_row_drop:.1%} allowed. Upstream may have published a truncated file."
-            )
-        previous_column_types = dict(previous_clean_state["columns"])
-        current_column_types = dict(column_schema)
-        removed_columns = [col_name for col_name in previous_column_types if col_name not in current_column_types]
-        retyped_columns = [
-            f"{col_name} {previous_column_types[col_name]} -> {current_column_types[col_name]}"
-            for col_name in current_column_types
-            if col_name in previous_column_types and previous_column_types[col_name] != current_column_types[col_name]
-        ]
-        added_columns = [col_name for col_name in current_column_types if col_name not in previous_column_types]
-        if added_columns:
-            notes.append(f"new column(s) {', '.join(added_columns)}")
-        if removed_columns or retyped_columns:
-            schema_change_summary = "; ".join(
-                filter(
-                    None,
-                    [
-                        f"removed: {', '.join(removed_columns)}" if removed_columns else "",
-                        f"type changed: {', '.join(retyped_columns)}" if retyped_columns else "",
-                    ],
-                )
-            )
-            if not accept_schema_change:
-                raise ContractError(
-                    f"schema changed ({schema_change_summary}). Re-run with --accept-schema-change "
-                    "once downstream code is ready for it."
-                )
-            notes.append(f"accepted schema change ({schema_change_summary})")
-
+    notes = (
+        _check_against_previous(clean_frame.height, column_schema, dataset, previous_clean_state, accept_schema_change)
+        if previous_clean_state
+        else []
+    )
     return CleanBuildResult(
         clean_frame=clean_frame,
-        rejected_frame=rejected_frame if rejected_frame.height else None,
-        input_row_count=input_row_count,
+        rejected_frame=rejected_frame,
+        input_row_count=raw_frame.height,
         deduped_row_count=deduped_row_count,
         column_schema=column_schema,
         notes=notes,

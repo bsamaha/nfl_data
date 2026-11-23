@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -55,23 +55,44 @@ class DatasetSpec(_StrictModel):
 
 @dataclass(frozen=True)
 class Dataset:
-    """One catalog entry: its name and its spec."""
+    """One resolved catalog entry with flat access to its contract fields."""
 
     name: str
-    spec: DatasetSpec
+    release: str
+    file: str
+    key_columns: tuple[str, ...]
+    min_season: int | None
+    history: Literal["latest", "all"]
+    reject_null_keys: bool
+    keep_last_by: str | None
+    max_row_drop: float
+    max_reject_share: float
+    _filename_pattern: re.Pattern[str] = field(repr=False, compare=False)
+
+    @classmethod
+    def from_spec(cls, name: str, spec: DatasetSpec) -> Dataset:
+        regex = re.escape(spec.file).replace(re.escape(SEASON_PLACEHOLDER), r"(?P<season>\d{4})")
+        return cls(
+            name=name,
+            release=spec.release,
+            file=spec.file,
+            key_columns=tuple(spec.key),
+            min_season=spec.min_season,
+            history=spec.history,
+            reject_null_keys=spec.reject_null_keys,
+            keep_last_by=spec.keep_last_by,
+            max_row_drop=spec.max_row_drop,
+            max_reject_share=spec.max_reject_share,
+            _filename_pattern=re.compile(regex),
+        )
 
     @property
     def is_seasonal(self) -> bool:
-        return SEASON_PLACEHOLDER in self.spec.file
-
-    @property
-    def key_columns(self) -> list[str]:
-        return list(self.spec.key)
+        return SEASON_PLACEHOLDER in self.file
 
     def match_asset_filename(self, asset_filename: str) -> tuple[bool, int | None]:
         """Return (matched, season) for an upstream filename against this dataset's pattern."""
-        pattern = re.escape(self.spec.file).replace(re.escape(SEASON_PLACEHOLDER), r"(?P<season>\d{4})")
-        regex_match = re.fullmatch(pattern, asset_filename)
+        regex_match = self._filename_pattern.fullmatch(asset_filename)
         if not regex_match:
             return False, None
         return True, int(regex_match.group("season")) if self.is_seasonal else None
@@ -81,9 +102,9 @@ class Dataset:
         """Changes whenever the rules that shape the clean file change, forcing a rebuild."""
         payload = {
             "build": CLEAN_BUILD_VERSION,
-            "key": self.key_columns,
-            "reject_null_keys": self.spec.reject_null_keys,
-            "keep_last_by": self.spec.keep_last_by,
+            "key": list(self.key_columns),
+            "reject_null_keys": self.reject_null_keys,
+            "keep_last_by": self.keep_last_by,
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
@@ -101,17 +122,30 @@ class Catalog(_StrictModel):
             raise ValueError(f"dataset names must be lower_snake_case: {invalid_names}")
         return self
 
-    def get_dataset(self, dataset_name: str) -> Dataset:
-        return Dataset(name=dataset_name, spec=self.datasets[dataset_name])
-
-    def select_datasets(self, dataset_names: list[str] | None = None) -> list[Dataset]:
-        """Datasets in catalog order: all of them for None, otherwise those in `dataset_names`. Unknown names fail."""
-        if dataset_names is None:
-            return [self.get_dataset(dataset_name) for dataset_name in self.datasets]
+    def _require_known(self, dataset_names: list[str]) -> None:
         unknown_names = [dataset_name for dataset_name in dataset_names if dataset_name not in self.datasets]
         if unknown_names:
             raise ValueError(f"not in the catalog: {', '.join(unknown_names)}")
-        return [self.get_dataset(dataset_name) for dataset_name in self.datasets if dataset_name in dataset_names]
+
+    def get_dataset(self, dataset_name: str) -> Dataset:
+        return Dataset.from_spec(dataset_name, self.datasets[dataset_name])
+
+    def select_datasets(
+        self,
+        dataset_names: list[str] | None = None,
+        *,
+        exclude_names: list[str] | None = None,
+    ) -> list[Dataset]:
+        """Datasets in catalog order: all for None, otherwise those in `dataset_names`, minus `exclude_names`."""
+        if dataset_names is not None:
+            self._require_known(dataset_names)
+        if exclude_names is not None:
+            self._require_known(exclude_names)
+        excluded = set(exclude_names or ())
+        chosen = (
+            list(self.datasets) if dataset_names is None else [name for name in self.datasets if name in dataset_names]
+        )
+        return [self.get_dataset(name) for name in chosen if name not in excluded]
 
 
 def load_catalog(catalog_path: str | Path) -> Catalog:

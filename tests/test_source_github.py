@@ -202,3 +202,4 @@ def test_download_gives_up(monkeypatch, tmp_path, http_status, expected_attempts
     with pytest.raises(SourceError):
         GitHubReleasesSource("o/r", max_attempts=2, backoff_seconds=0).fetch(SAMPLE_ASSET, tmp_path / "a.parquet")
     assert len(requests) == expected_attempts
+    assert not (tmp_path / "a.parquet").exists()
