@@ -117,9 +117,12 @@ def build_clean(
             .head(3)
             .rows()
         )
+        unused_rule = ""
+        if order_column and order_column not in clean_frame.columns:
+            unused_rule = f". keep_last_by names {order_column!r}, which this file does not have"
         raise ContractError(
             f"{violations.duplicate_key_rows} row(s) repeat a key ({', '.join(key_columns)}), "
-            f"e.g. {sample_duplicate_keys}"
+            f"e.g. {sample_duplicate_keys}{unused_rule}"
         )
 
     if clean_frame.height == 0:

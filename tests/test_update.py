@@ -39,11 +39,11 @@ def test_first_run_publishes_and_an_identical_second_run_changes_nothing(upstrea
     upstream_file_path = upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
 
     dry_summary = run_update(catalog, upstream.source, lake, dry_run=True)
-    assert dry_summary.fetched_file_ids == dry_summary.published_file_ids == [STATS_FILE_ID]
+    assert dry_summary.fetched_file_ids == dry_summary.rebuilt_file_ids == [STATS_FILE_ID]
     assert not lake.root_dir.exists()  # a dry run writes nothing
 
     first_summary = run_update(catalog, upstream.source, lake)
-    assert first_summary.fetched_file_ids == first_summary.published_file_ids == [STATS_FILE_ID]
+    assert first_summary.fetched_file_ids == first_summary.rebuilt_file_ids == [STATS_FILE_ID]
     (raw_file_path,) = stored_raw_paths(lake)
     assert raw_file_path.read_bytes() == upstream_file_path.read_bytes()  # stored byte for byte
     # same columns and types, sorted by key
@@ -52,7 +52,7 @@ def test_first_run_publishes_and_an_identical_second_run_changes_nothing(upstrea
     clean_file_path = lake.clean_file_path("stats", STATS_FILENAME)
     clean_before = (clean_file_path.read_bytes(), clean_file_path.stat().st_mtime_ns)
     second_summary = run_update(catalog, upstream.source, lake)
-    assert second_summary.fetched_file_ids == second_summary.published_file_ids == []
+    assert second_summary.fetched_file_ids == second_summary.rebuilt_file_ids == []
     assert second_summary.unchanged_file_count == 1
     assert (clean_file_path.read_bytes(), clean_file_path.stat().st_mtime_ns) == clean_before
     assert len(stored_raw_paths(lake)) == 1
@@ -60,6 +60,7 @@ def test_first_run_publishes_and_an_identical_second_run_changes_nothing(upstrea
 
 
 def test_correction_replaces_the_clean_file_and_history_decides_which_raw_versions_stay(upstream, lake):
+    # stats keeps the default history, latest; that default is what this test checks for stats
     catalog = build_catalog(stats=STATS_DATASET_SPEC, games={**GAMES_DATASET_SPEC, "history": "all"})
     make_games_frame = lambda spread: pl.DataFrame({"game_id": ["2024_01_BUF_MIA"], "spread_line": [spread]})
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame(targets=8))
@@ -112,7 +113,7 @@ def test_one_bad_file_blocks_every_publish_in_the_run(upstream, lake):
     upstream.put("schedules", "games.parquet", make_games_frame("g1", "g2"))
     summary = run_update(catalog, upstream.source, lake)
     assert summary.fetched_file_ids == [GAMES_FILE_ID]  # the good file was already stored by the failed run
-    assert sorted(summary.published_file_ids) == [GAMES_FILE_ID, STATS_FILE_ID] and published_targets(lake) == 10
+    assert sorted(summary.rebuilt_file_ids) == [GAMES_FILE_ID, STATS_FILE_ID] and published_targets(lake) == 10
 
 
 def test_failure_while_publishing_is_counted_and_the_next_run_finishes(upstream, lake):
@@ -129,7 +130,7 @@ def test_failure_while_publishing_is_counted_and_the_next_run_finishes(upstream,
 
     blocking_dir.rmdir()
     summary = run_update(catalog, upstream.source, lake)
-    assert summary.fetched_file_ids == [] and summary.published_file_ids == [GAMES_FILE_ID]
+    assert summary.fetched_file_ids == [] and summary.rebuilt_file_ids == [GAMES_FILE_ID]
     assert len(lake.load_clean_state()) == 2
 
 
@@ -204,7 +205,7 @@ def test_file_that_lost_more_rows_than_the_limit_is_refused(upstream, lake):
     run_update(catalog, upstream.source, lake)
     assert read_clean_frame(lake).height == 98
 
-    upstream.put("stats_player", STATS_FILENAME, make_rows(49))
+    upstream.put("stats_player", STATS_FILENAME, make_rows(49))  # half the rows: the limit is set per dataset
     run_update(build_catalog(stats={**STATS_DATASET_SPEC, "max_row_drop": 0.5}), upstream.source, lake)
     assert read_clean_frame(lake).height == 49
 
@@ -302,6 +303,46 @@ def test_damaged_download_is_refused(upstream, lake, damaged_source_cls):
     assert lake.load_raw_versions() == {} and not lake.clean_dir.exists()
 
 
+class StaleListingSource(LocalDirSource):
+    """An upstream whose first `stale_listings` listings describe the files as they were when it was created."""
+
+    def __init__(self, root_dir, stale_listings=1, listing_lag_seconds=0.0):
+        super().__init__(root_dir)
+        self.listing_at_creation = super().list_assets()
+        self.stale_listings = stale_listings
+        self.listing_lag_seconds = listing_lag_seconds
+        self.listings_served = 0
+
+    def list_assets(self):
+        self.listings_served += 1
+        return self.listing_at_creation if self.listings_served <= self.stale_listings else super().list_assets()
+
+
+@pytest.mark.parametrize(
+    "replacement, stale_listings, listing_lag_seconds",
+    [
+        (make_stats_frame(targets=10), 1, 0.0),
+        (make_stats_frame(targets=10).head(1), 1, 0.0),
+        (make_stats_frame(targets=10), 2, 0.01),
+    ],
+    ids=["other values", "another size", "listing catches up only after a wait"],
+)
+def test_file_replaced_upstream_after_the_listing_is_fetched_against_a_new_listing(
+    upstream, lake, replacement, stale_listings, listing_lag_seconds
+):
+    catalog = build_catalog(stats=STATS_DATASET_SPEC)
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame(targets=8))
+    source = StaleListingSource(upstream.root_dir, stale_listings, listing_lag_seconds)
+    upstream_file_path = upstream.put("stats_player", STATS_FILENAME, replacement)  # replaced after the listing
+
+    run_update(catalog, source, lake)
+
+    assert source.listings_served == stale_listings + 1
+    (raw_file_path,) = stored_raw_paths(lake)
+    assert raw_file_path.read_bytes() == upstream_file_path.read_bytes()
+    assert_frame_equal(read_clean_frame(lake), replacement.sort("player_id", "game_id"))
+
+
 def test_file_that_is_not_parquet_is_refused(upstream, lake):
     corrupt_path = upstream.root_dir / "stats_player" / STATS_FILENAME
     corrupt_path.parent.mkdir(parents=True)
@@ -349,10 +390,10 @@ def test_seasons_before_min_season_or_outside_the_filter_are_not_built(upstream,
     for season in (2019, 2024, 2025):
         upstream.put("stats_player", f"stats_player_week_{season}.parquet", make_stats_frame())
 
-    assert run_update(catalog, upstream.source, lake, season_filter={2025}).published_file_ids == [
+    assert run_update(catalog, upstream.source, lake, season_filter={2025}).rebuilt_file_ids == [
         "stats/stats_player_week_2025.parquet"
     ]
-    assert run_update(catalog, upstream.source, lake).published_file_ids == [STATS_FILE_ID]  # 2025 is already published
+    assert run_update(catalog, upstream.source, lake).rebuilt_file_ids == [STATS_FILE_ID]  # 2025 is already published
     assert not lake.clean_file_path("stats", "stats_player_week_2019.parquet").exists()
 
 
@@ -372,8 +413,8 @@ def test_changing_a_dataset_rule_rebuilds_without_fetching(upstream, lake):
     rekeyed_catalog = build_catalog(stats={**STATS_DATASET_SPEC, "key": ["player_id", "game_id", "team"]})
     for dry_run in (True, False):
         summary = run_update(rekeyed_catalog, upstream.source, lake, dry_run=dry_run)
-        assert summary.fetched_file_ids == [] and summary.published_file_ids == [STATS_FILE_ID]
-    assert run_update(rekeyed_catalog, upstream.source, lake).published_file_ids == []
+        assert summary.fetched_file_ids == [] and summary.rebuilt_file_ids == [STATS_FILE_ID]
+    assert run_update(rekeyed_catalog, upstream.source, lake).rebuilt_file_ids == []
 
 
 def test_verify_notices_damage_to_published_files(upstream, lake):
@@ -399,7 +440,7 @@ def test_verify_notices_damage_to_published_files(upstream, lake):
 
     clean_file_path.write_bytes(valid_clean_bytes)
     (raw_file_path,) = stored_raw_paths(lake)
-    raw_file_path.write_bytes(b"tampered")
+    raw_file_path.write_bytes(b"tampered")  # only a deep check reads raw files
     assert verify_lake(catalog, lake) == (1, []) and verify_lake(catalog, lake, deep=True).errors != []
     raw_file_path.unlink()
     assert verify_lake(catalog, lake, deep=True).errors != []

@@ -15,8 +15,10 @@ finishes it. A dry run and a held lock record nothing.
 from __future__ import annotations
 
 import concurrent.futures as concurrent_futures
+import dataclasses
 import os
 import shutil
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,10 +30,13 @@ import structlog
 
 from .catalog import Catalog, Dataset
 from .contract import ContractError, build_clean, count_key_violations
-from .source import SourceError, UpstreamAsset, UpstreamListing, UpstreamSource, compute_file_sha256
+from .source import ListingMismatch, SourceError, UpstreamAsset, UpstreamListing, UpstreamSource, compute_file_sha256
 from .store import LakeStore, format_utc_iso, utc_now
 
 logger = structlog.get_logger("nfl_lake")
+# How many times a run lists upstream again when a download does not match the listing: straight away, then twice
+# more after waiting the source's `listing_lag_seconds`.
+LISTING_RECHECKS = 3
 # What polars raises for a Parquet file it cannot read. PanicException is not an Exception subclass.
 UNREADABLE_PARQUET_ERRORS = (pl.exceptions.PolarsError, pl.exceptions.PanicException, OSError)
 
@@ -74,7 +79,7 @@ class UpdateSummary:
     target_file_count: int = 0
     dataset_count: int = 0
     fetched_file_ids: list[str] = field(default_factory=list)
-    published_file_ids: list[str] = field(default_factory=list)  # rebuilt and published (or planned in a dry run)
+    rebuilt_file_ids: list[str] = field(default_factory=list)  # in a dry run: the files that would be rebuilt
     unchanged_file_count: int = 0
     pruned_raw_count: int = 0
     bytes_fetched: int = 0
@@ -200,10 +205,10 @@ def _fetch_one_target(
     source.fetch(target.asset, staged_raw_path)
     downloaded_bytes = staged_raw_path.stat().st_size
     if downloaded_bytes != target.asset.size_bytes:
-        raise SourceError(f"downloaded {downloaded_bytes} bytes but upstream lists {target.asset.size_bytes}")
+        raise ListingMismatch(f"downloaded {downloaded_bytes} bytes but upstream lists {target.asset.size_bytes}")
     actual_sha256 = compute_file_sha256(staged_raw_path)
     if target.asset.sha256 and actual_sha256 != target.asset.sha256:
-        raise SourceError("checksum differs from the one upstream publishes")
+        raise ListingMismatch("checksum differs from the one upstream publishes")
     try:
         parquet_metadata = pq.read_metadata(staged_raw_path)
     except Exception as error:
@@ -234,6 +239,47 @@ def _fetch_one_target(
         "path": lake.relative_posix_path(final_raw_path),
         "run_id": run_id,
     }
+
+
+def _fetch_targets(
+    source: UpstreamSource,
+    lake: LakeStore,
+    targets_to_fetch: list[IngestTarget],
+    staging_dir: Path,
+    summary: UpdateSummary,
+    workers: int,
+) -> tuple[list[str], list[tuple[IngestTarget, str]]]:
+    """Fetch files in parallel and record each one stored.
+
+    Returns (errors, mismatched): `mismatched` pairs each target whose download did not match the listing with what differed.
+    """
+    errors: list[str] = []
+    mismatched: list[tuple[IngestTarget, str]] = []
+    # The folders that workers share are made here: threads creating one folder at the same moment can fail on Windows.
+    for dataset_name in {target.dataset.name for target in targets_to_fetch}:
+        (staging_dir / "raw" / dataset_name).mkdir(parents=True, exist_ok=True)
+        (lake.raw_dir / dataset_name).mkdir(parents=True, exist_ok=True)
+    with concurrent_futures.ThreadPoolExecutor(workers) as executor:
+        target_by_future = {
+            executor.submit(_fetch_one_target, source, lake, target, staging_dir, summary.run_id): target
+            for target in targets_to_fetch
+        }
+        for future in concurrent_futures.as_completed(target_by_future):
+            target = target_by_future[future]
+            try:
+                raw_file_record = future.result()
+            except ListingMismatch as mismatch:
+                mismatched.append((target, str(mismatch)))
+                logger.warning("listing_mismatch", file=target.file_id, detail=str(mismatch))
+            except Exception as error:
+                errors.append(f"{target.file_id}: {error}")
+                logger.error("fetch_failed", file=target.file_id, error=str(error))
+            else:
+                lake.append_raw_file_event(raw_file_record)  # recorded even if another file fails, avoiding re-fetches
+                summary.fetched_file_ids.append(target.file_id)
+                summary.bytes_fetched += raw_file_record["size"]
+                logger.info("fetched", file=target.file_id, rows=raw_file_record["rows"])
+    return errors, mismatched
 
 
 def _build_one_target(
@@ -302,12 +348,12 @@ def _execute_update(
     if summary.dry_run:
         summary.fetched_file_ids = sorted(target.file_id for target in targets_to_fetch)
         fetching_file_ids = set(summary.fetched_file_ids)
-        summary.published_file_ids = sorted(
+        summary.rebuilt_file_ids = sorted(
             target.file_id for target in targets
             if target.file_id in fetching_file_ids or _needs_rebuild(target, raw_versions_by_file, clean_state, lake)
         )
         summary.bytes_fetched = sum(target.asset.size_bytes for target in targets_to_fetch)
-        summary.unchanged_file_count = len(targets) - len(summary.published_file_ids)
+        summary.unchanged_file_count = len(targets) - len(summary.rebuilt_file_ids)
         return
 
     # 1. fetch
@@ -316,27 +362,31 @@ def _execute_update(
         files=len(targets_to_fetch),
         megabytes=round(sum(target.asset.size_bytes for target in targets_to_fetch) / 1e6, 1),
     )
-    # The folders that workers share are made here: threads creating one folder at the same moment can fail on Windows.
-    for dataset_name in {target.dataset.name for target in targets_to_fetch}:
-        (staging_dir / "raw" / dataset_name).mkdir(parents=True, exist_ok=True)
-        (lake.raw_dir / dataset_name).mkdir(parents=True, exist_ok=True)
-    with concurrent_futures.ThreadPoolExecutor(workers) as executor:
-        target_by_future = {
-            executor.submit(_fetch_one_target, source, lake, target, staging_dir, summary.run_id): target
-            for target in targets_to_fetch
-        }
-        for future in concurrent_futures.as_completed(target_by_future):
-            target = target_by_future[future]
-            try:
-                raw_file_record = future.result()
-            except Exception as error:
-                errors.append(f"{target.file_id}: {error}")
-                logger.error("fetch_failed", file=target.file_id, error=str(error))
+    errors, mismatched = _fetch_targets(source, lake, targets_to_fetch, staging_dir, summary, workers)
+    # A download that does not match the listing usually means upstream replaced the file after the listing was
+    # made. List again and fetch what the new listing describes. Where the listing has not changed, give it time
+    # to catch up before calling the download bad.
+    for recheck in range(LISTING_RECHECKS):
+        if errors or not mismatched:
+            break
+        if recheck:
+            logger.info("waiting_for_listing", seconds=source.listing_lag_seconds, files=len(mismatched))
+            time.sleep(source.listing_lag_seconds)
+        fresh_listing = source.list_assets()
+        relisted: list[IngestTarget] = []
+        unchanged: list[tuple[IngestTarget, str]] = []
+        for target, mismatch in mismatched:
+            fresh_asset = fresh_listing.get(target.asset.release_tag, {}).get(target.asset.filename)
+            if fresh_asset is not None and fresh_asset != target.asset:
+                relisted.append(dataclasses.replace(target, asset=fresh_asset))
             else:
-                lake.append_raw_file_event(raw_file_record)  # recorded even if another file fails, avoiding re-fetches
-                summary.fetched_file_ids.append(target.file_id)
-                summary.bytes_fetched += raw_file_record["size"]
-                logger.info("fetched", file=target.file_id, rows=raw_file_record["rows"])
+                unchanged.append((target, mismatch))
+        more_errors, mismatched_again = _fetch_targets(source, lake, relisted, staging_dir, summary, workers)
+        errors += more_errors
+        mismatched = unchanged + mismatched_again
+        if not source.listing_lag_seconds:  # this source's listing is always current, so waiting would change nothing
+            break
+    errors += [f"{target.file_id}: {mismatch}" for target, mismatch in mismatched]
     summary.fetched_file_ids.sort()
     if errors:
         raise UpdateFailed(sorted(errors))
@@ -384,14 +434,14 @@ def _execute_update(
                 "built_at": published_at,
                 "run_id": summary.run_id,
             }
-            summary.published_file_ids.append(target.file_id)
+            summary.rebuilt_file_ids.append(target.file_id)
             if staged_file.clean_state_entry["rejected_rows"]:
                 summary.rejected_rows_by_file[target.file_id] = staged_file.clean_state_entry["rejected_rows"]
             if staged_file.clean_state_entry["deduped_rows"]:
                 summary.deduped_rows_by_file[target.file_id] = staged_file.clean_state_entry["deduped_rows"]
             summary.notes += [f"{target.file_id}: {note}" for note in staged_file.notes]
     finally:
-        if summary.published_file_ids:  # also after a failure part-way, so clean/ and its record agree
+        if summary.rebuilt_file_ids:  # also after a failure part-way, so clean/ and its record agree
             lake.save_clean_state(clean_state)
 
     for target in targets:
@@ -407,7 +457,7 @@ def _execute_update(
                 "pruned_at": published_at,
             })
             summary.pruned_raw_count += 1
-    summary.unchanged_file_count = len(targets) - len(summary.published_file_ids)
+    summary.unchanged_file_count = len(targets) - len(summary.rebuilt_file_ids)
 
 
 def run_update(
@@ -441,7 +491,7 @@ def run_update(
             "seasons": sorted(season_filter) if season_filter else None,
             "listed": summary.target_file_count,
             "fetched": len(summary.fetched_file_ids),
-            "built": len(summary.published_file_ids),
+            "built": len(summary.rebuilt_file_ids),
             "unchanged": summary.unchanged_file_count,
             "pruned": summary.pruned_raw_count,
             "bytes_fetched": summary.bytes_fetched,
@@ -466,7 +516,7 @@ def run_update(
         except Exception as error:
             errors = [f"{type(error).__name__}: {error}"]
             record_run("failed", errors)
-            raise UpdateFailed(errors, published_file_count=len(summary.published_file_ids)) from error
+            raise UpdateFailed(errors, published_file_count=len(summary.rebuilt_file_ids)) from error
         else:
             record_run("ok", [])
         finally:

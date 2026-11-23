@@ -28,6 +28,14 @@ class SourceError(RuntimeError):
     """The upstream could not be listed, or a file could not be fetched intact."""
 
 
+class ListingMismatch(SourceError):
+    """The file that was fetched is not the one the listing describes: its size or checksum differs.
+
+    The usual cause is that upstream replaced the file after the listing was made, so the run lists again
+    before it gives up.
+    """
+
+
 @dataclass(frozen=True)
 class UpstreamAsset:
     release_tag: str
@@ -42,6 +50,9 @@ UpstreamListing = dict[str, dict[str, UpstreamAsset]]  # release_tag -> filename
 
 
 class UpstreamSource(Protocol):
+    # How long a listing can go on describing a file after upstream has replaced it. 0 when a listing is always current.
+    listing_lag_seconds: float
+
     def list_assets(self) -> UpstreamListing: ...
 
     def fetch(self, asset: UpstreamAsset, dest_path: Path) -> None: ...
@@ -57,6 +68,9 @@ def compute_file_sha256(file_path: Path) -> str:
 
 class GitHubReleasesSource:
     """All releases of one GitHub repository: one API call per 100 releases."""
+
+    # On 23 Nov 2026 the listing still described the previous schedules file over a minute after it was replaced.
+    listing_lag_seconds = 60.0
 
     def __init__(self, repo: str, token: str | None = None, max_attempts: int = 3, backoff_seconds: float = 2.0):
         self.repo = repo
@@ -132,17 +146,32 @@ class GitHubReleasesSource:
         operation = f"downloading {asset.filename}"
 
         def download_once() -> None:
-            with self._open_request(request, operation) as response, open(dest_path, "wb") as output_file:
-                shutil.copyfileobj(response, output_file, DOWNLOAD_CHUNK_BYTES)
-            downloaded_bytes = Path(dest_path).stat().st_size
-            if downloaded_bytes < asset.size_bytes:  # http.client returns a body that ended early without raising
-                raise OSError(f"body ended after {downloaded_bytes} of {asset.size_bytes} bytes")
+            with self._open_request(request, operation) as response:
+                # What this response says it will send. The listing can describe an earlier file of another size.
+                declared_length = getattr(response, "headers", {}).get("Content-Length")
+                expected_bytes = int(declared_length) if declared_length else asset.size_bytes
+                received_bytes = 0
+                try:
+                    output_file = open(dest_path, "wb")
+                except OSError as error:  # a local problem: trying the download again would not help
+                    raise SourceError(f"cannot write {dest_path}: {error}") from error
+                with output_file:
+                    while chunk := response.read(DOWNLOAD_CHUNK_BYTES):
+                        received_bytes += len(chunk)
+                        try:
+                            output_file.write(chunk)
+                        except OSError as error:
+                            raise SourceError(f"cannot write {dest_path}: {error}") from error
+            if received_bytes < expected_bytes:  # http.client returns a body that ended early without raising
+                raise OSError(f"body ended after {received_bytes} of {expected_bytes} bytes")
 
         self._retry_transient_errors(operation, download_once)
 
 
 class LocalDirSource:
     """A folder of `<release>/<file>` used as the upstream."""
+
+    listing_lag_seconds = 0.0
 
     def __init__(self, root_dir: str | Path):
         self.root_dir = Path(root_dir).resolve()

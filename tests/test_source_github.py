@@ -74,6 +74,14 @@ class IncompleteReadResponse(io.BytesIO):
         raise http.client.IncompleteRead(b"")
 
 
+class ResponseWithLength(io.BytesIO):
+    """A body that comes with a Content-Length header, as a real download does."""
+
+    def __init__(self, body: bytes, content_length: int):
+        super().__init__(body)
+        self.headers = {"Content-Length": str(content_length)}
+
+
 def raise_connection_refused():
     raise urllib.error.URLError("connection refused")
 
@@ -122,8 +130,9 @@ def test_rate_limit_is_final(monkeypatch):
         DroppedMidFileResponse,
         IncompleteReadResponse,
         lambda: io.BytesIO(SAMPLE_PARQUET_BYTES[:4]),
+        lambda: ResponseWithLength(SAMPLE_PARQUET_BYTES[:4], content_length=10),
     ],
-    ids=["connection refused", "dropped mid-file", "incomplete read", "body ends early"],
+    ids=["connection refused", "dropped mid-file", "incomplete read", "body ends early", "shorter than its length"],
 )
 def test_download_is_retried_and_sends_no_token(monkeypatch, tmp_path, first_response):
     requests = stub_urlopen(
@@ -135,6 +144,23 @@ def test_download_is_retried_and_sends_no_token(monkeypatch, tmp_path, first_res
 
     assert (tmp_path / "a.parquet").read_bytes() == SAMPLE_PARQUET_BYTES and len(requests) == 2
     assert all(request.get_header("Authorization") is None for request in requests)  # download host is not GitHub's API
+
+
+def test_complete_download_of_another_size_than_listed_is_left_to_the_run(monkeypatch, tmp_path):
+    # The listing can describe an earlier file. The body is whole by its own length, so nothing is retried here.
+    requests = stub_urlopen(monkeypatch, lambda attempt_number, request: ResponseWithLength(b"PAR1", 4))
+
+    GitHubReleasesSource("o/r", backoff_seconds=0).fetch(SAMPLE_ASSET, tmp_path / "a.parquet")
+
+    assert (tmp_path / "a.parquet").read_bytes() == b"PAR1" and len(requests) == 1
+
+
+def test_download_that_cannot_be_written_is_not_retried(monkeypatch, tmp_path):
+    requests = stub_urlopen(monkeypatch, lambda attempt_number, request: io.BytesIO(SAMPLE_PARQUET_BYTES))
+
+    with pytest.raises(SourceError):
+        GitHubReleasesSource("o/r", backoff_seconds=0).fetch(SAMPLE_ASSET, tmp_path / "no_such_folder" / "a.parquet")
+    assert len(requests) == 1
 
 
 def test_cli_lists_the_catalog_repo_on_github_with_the_token_when_no_source_folder_is_set(monkeypatch, tmp_path):

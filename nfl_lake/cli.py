@@ -146,7 +146,7 @@ def update(
             typer.echo(
                 f"dry run: {summary.target_file_count} files in {summary.dataset_count} datasets; "
                 f"would fetch {len(summary.fetched_file_ids)} ({fetched_megabytes:.1f} MB) "
-                f"and rebuild {len(summary.published_file_ids)}"
+                f"and rebuild {len(summary.rebuilt_file_ids)}"
             )
             for file_id in summary.fetched_file_ids:
                 typer.echo(f"  fetch {file_id}")
@@ -155,7 +155,7 @@ def update(
         typer.echo(
             f"  {summary.target_file_count} files in {summary.dataset_count} datasets: "
             f"fetched {len(summary.fetched_file_ids)} ({fetched_megabytes:.1f} MB), "
-            f"rebuilt {len(summary.published_file_ids)}, unchanged {summary.unchanged_file_count}"
+            f"rebuilt {len(summary.rebuilt_file_ids)}, unchanged {summary.unchanged_file_count}"
         )
         if summary.rejected_rows_by_file:
             typer.echo(

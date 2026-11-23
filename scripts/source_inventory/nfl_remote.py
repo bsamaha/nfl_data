@@ -2,6 +2,7 @@
 import io
 import json
 import re
+import sys
 import threading
 import urllib.request
 from pathlib import Path
@@ -9,6 +10,11 @@ from pathlib import Path
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+# The probes count key problems with the function ingest uses, so the two cannot disagree about what a
+# duplicate is. The scripts are run by path, so the repo root is put on the import path here.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from nfl_lake.contract import count_key_violations  # noqa: E402, F401
 
 USER_AGENT_HEADERS = {"User-Agent": "source-inventory"}
 SEASON_YEAR_PATTERN = re.compile(r"(?<!\d)(19\d\d|20\d\d)(?!\d)")
@@ -134,14 +140,3 @@ def read_remote_columns(asset, columns=None):
     arrow_table = parquet_file.read(columns=selected_columns)
     return pl.from_arrow(arrow_table)
 
-
-def count_key_violations(frame, key_columns):
-    """Return (rows with a null or empty-string key column, rows repeating a key among the remaining rows)."""
-    key_frame = frame.select(key_columns)
-    key_frame = key_frame.with_columns(
-        pl.when(pl.col(col_name) == "").then(None).otherwise(pl.col(col_name)).alias(col_name)
-        for col_name in key_columns
-        if key_frame[col_name].dtype == pl.String
-    )
-    non_null_key_frame = key_frame.drop_nulls()
-    return key_frame.height - non_null_key_frame.height, non_null_key_frame.height - non_null_key_frame.unique().height
