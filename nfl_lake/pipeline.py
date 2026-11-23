@@ -531,6 +531,11 @@ def run_update(
     summary = UpdateSummary(run_id=f"run_{started_at:%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:4]}", dry_run=dry_run)
     staging_dir = lake.staging_dir / summary.run_id
 
+    def execute() -> None:  # written once, so a dry run plans exactly what a real run does
+        _execute_update(
+            catalog, source, lake, summary, staging_dir, dataset_names, season_filter, accept_schema_change, workers
+        )
+
     def record_run(run_status: str, errors: list[str]) -> None:
         lake.append_run_record(
             {
@@ -554,16 +559,12 @@ def run_update(
         )
 
     if dry_run:  # reads only: no lock, no manifest entry
-        _execute_update(
-            catalog, source, lake, summary, staging_dir, dataset_names, season_filter, accept_schema_change, workers
-        )
+        execute()
         return summary
 
     with lake.acquire_lock():
         try:
-            _execute_update(
-                catalog, source, lake, summary, staging_dir, dataset_names, season_filter, accept_schema_change, workers
-            )
+            execute()
         except UpdateFailed as error:
             record_run("failed", error.errors)
             raise

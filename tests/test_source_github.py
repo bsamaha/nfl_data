@@ -75,6 +75,13 @@ class IncompleteReadResponse(io.BytesIO):
         raise http.client.IncompleteRead(b"")
 
 
+class NetworkGoneResponse(io.BytesIO):
+    """The network drops mid-file and the socket raises a plain OSError, as Windows does for 'network is unreachable'."""
+
+    def read(self, *args):
+        raise OSError(10051, "A socket operation was attempted to an unreachable network")
+
+
 class ResponseWithLength(io.BytesIO):
     """A body that comes with a Content-Length header, as a real download does."""
 
@@ -130,10 +137,18 @@ def test_rate_limit_is_final(monkeypatch):
         raise_connection_refused,
         DroppedMidFileResponse,
         IncompleteReadResponse,
+        NetworkGoneResponse,
         lambda: io.BytesIO(SAMPLE_PARQUET_BYTES[:4]),
         lambda: ResponseWithLength(SAMPLE_PARQUET_BYTES[:4], content_length=10),
     ],
-    ids=["connection refused", "dropped mid-file", "incomplete read", "body ends early", "shorter than its length"],
+    ids=[
+        "connection refused",
+        "dropped mid-file",
+        "incomplete read",
+        "network gone mid-file",
+        "body ends early",
+        "shorter than its length",
+    ],
 )
 def test_download_is_retried_and_sends_no_token(monkeypatch, tmp_path, first_response):
     requests = stub_urlopen(
@@ -154,6 +169,15 @@ def test_complete_download_of_another_size_than_listed_is_left_to_the_run(monkey
     GitHubReleasesSource("o/r", backoff_seconds=0).fetch(SAMPLE_ASSET, tmp_path / "a.parquet")
 
     assert (tmp_path / "a.parquet").read_bytes() == b"PAR1" and len(requests) == 1
+
+
+def test_download_to_a_path_that_cannot_be_opened_is_not_retried(monkeypatch, tmp_path):
+    requests = stub_urlopen(monkeypatch, lambda attempt_number, request: io.BytesIO(SAMPLE_PARQUET_BYTES))
+    (tmp_path / "a.parquet").mkdir()  # a folder where the file should go
+
+    with pytest.raises(SourceError):
+        GitHubReleasesSource("o/r", backoff_seconds=0).fetch(SAMPLE_ASSET, tmp_path / "a.parquet")
+    assert len(requests) == 1  # the disk's problem, so the download is not tried again
 
 
 def test_download_to_a_folder_that_cannot_be_written_makes_no_request(monkeypatch, tmp_path):

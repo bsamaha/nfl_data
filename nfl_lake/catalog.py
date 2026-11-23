@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -53,38 +52,14 @@ class DatasetSpec(_StrictModel):
         return self
 
 
-@dataclass(frozen=True)
-class Dataset:
-    """One resolved catalog entry with flat access to its contract fields."""
+class Dataset(DatasetSpec):
+    """One catalog entry together with its name. Every setting of the entry is an attribute, declared once above."""
 
     name: str
-    release: str
-    file: str
-    key_columns: tuple[str, ...]
-    min_season: int | None
-    history: Literal["latest", "all"]
-    reject_null_keys: bool
-    keep_last_by: str | None
-    max_row_drop: float
-    max_reject_share: float
-    _filename_pattern: re.Pattern[str] = field(repr=False, compare=False)
 
-    @classmethod
-    def from_spec(cls, name: str, spec: DatasetSpec) -> Dataset:
-        regex = re.escape(spec.file).replace(re.escape(SEASON_PLACEHOLDER), r"(?P<season>\d{4})")
-        return cls(
-            name=name,
-            release=spec.release,
-            file=spec.file,
-            key_columns=tuple(spec.key),
-            min_season=spec.min_season,
-            history=spec.history,
-            reject_null_keys=spec.reject_null_keys,
-            keep_last_by=spec.keep_last_by,
-            max_row_drop=spec.max_row_drop,
-            max_reject_share=spec.max_reject_share,
-            _filename_pattern=re.compile(regex),
-        )
+    @property
+    def key_columns(self) -> tuple[str, ...]:
+        return tuple(self.key)
 
     @property
     def is_seasonal(self) -> bool:
@@ -92,7 +67,8 @@ class Dataset:
 
     def match_asset_filename(self, asset_filename: str) -> tuple[bool, int | None]:
         """Return (matched, season) for an upstream filename against this dataset's pattern."""
-        regex_match = self._filename_pattern.fullmatch(asset_filename)
+        pattern = re.escape(self.file).replace(re.escape(SEASON_PLACEHOLDER), r"(?P<season>\d{4})")
+        regex_match = re.fullmatch(pattern, asset_filename)
         if not regex_match:
             return False, None
         return True, int(regex_match.group("season")) if self.is_seasonal else None
@@ -102,7 +78,7 @@ class Dataset:
         """Changes whenever the rules that shape the clean file change, forcing a rebuild."""
         payload = {
             "build": CLEAN_BUILD_VERSION,
-            "key": list(self.key_columns),
+            "key": self.key,
             "reject_null_keys": self.reject_null_keys,
             "keep_last_by": self.keep_last_by,
         }
@@ -128,7 +104,7 @@ class Catalog(_StrictModel):
             raise ValueError(f"not in the catalog: {', '.join(unknown_names)}")
 
     def get_dataset(self, dataset_name: str) -> Dataset:
-        return Dataset.from_spec(dataset_name, self.datasets[dataset_name])
+        return Dataset(name=dataset_name, **self.datasets[dataset_name].model_dump())
 
     def select_datasets(
         self,

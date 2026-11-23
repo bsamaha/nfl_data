@@ -102,7 +102,7 @@ def _enforce_key_rules(raw_frame: pl.DataFrame, dataset: Dataset) -> tuple[pl.Da
         )
         deduped_row_count = row_count_before_dedup - clean_frame.height
 
-    duplicate_key_rows = clean_frame.height - clean_frame.select(key_columns).unique().height
+    duplicate_key_rows = count_key_violations(clean_frame, key_columns).duplicate_key_rows
     if duplicate_key_rows:
         sample_duplicate_keys = (
             clean_frame.filter(pl.struct(key_columns).is_duplicated()).select(key_columns).unique().head(3).rows()

@@ -4,7 +4,7 @@ Checked on 21 Nov 2026 (week 11 of the 2026 season) against the public `nflverse
 
 ## How this was checked
 
-The file listing comes from the GitHub releases API. Schemas come from the Parquet footers of each release file, read remotely. Keys were tested for duplicates and nulls in every season read, and each `game_id` was matched against the schedule; the exceptions are noted in the table and in each section. Stat definitions were not reconciled against play-by-play, and update timing was observed on one day only.
+The file listing comes from the GitHub releases API. Schemas come from the Parquet footers of each release file, read remotely. Keys were tested for duplicates and nulls in every season read, and each `game_id` was matched against the schedule; the exceptions are noted in the table and in each section. Stat definitions were not reconciled against play-by-play, and update timing was observed on one day only. The scripts that ran these checks are no longer in the tree, so the numbers below cannot be regenerated from it.
 
 ## What matters most
 
@@ -127,7 +127,7 @@ All URLs have the form `https://github.com/nflverse/nflverse-data/releases/downl
 
 ### PFR advanced stats
 
-- **Weekly files:** one row per player per game for pass, rush, rec and def. Key `game_id, pfr_player_id`. `probe_keys_all_seasons.py` reads only the rec files and found the key unique in every season from 2018; ingest enforced the same key on all four file types for 2018–2026.
+- **Weekly files:** one row per player per game for pass, rush, rec and def. Key `game_id, pfr_player_id`. The key test read only the rec files and found the key unique in every season from 2018; ingest enforced the same key on all four file types for 2018–2026.
 - **Lag:** one played 2026 game was missing.
 - **Season files:** four files with all seasons. All use `pfr_id` where the weekly files use `pfr_player_id`; the rush, rec and def files also use `tm` and `pos`, and the pass file uses `team` and has no position column.
 

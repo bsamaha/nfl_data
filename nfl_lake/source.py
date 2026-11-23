@@ -10,11 +10,11 @@ import hashlib
 import http.client
 import json
 import shutil
-import ssl
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,19 +39,21 @@ class ListingMismatch(SourceError):
     """
 
 
-class _TruncatedDownloadError(Exception):
-    """Raised when an HTTP response body ends before its declared byte length."""
+class _Transient(Exception):
+    """A failure of the network or the server, which another attempt may get past."""
 
 
-# Network, TLS, and HTTP 5xx errors that warrant retrying; excludes local filesystem OSErrors.
-_RETRYABLE_ERRORS = (
-    urllib.error.URLError,
-    ConnectionError,
-    TimeoutError,
-    ssl.SSLError,
-    http.client.HTTPException,
-    _TruncatedDownloadError,
-)
+@contextmanager
+def _network() -> Iterator[None]:
+    """Wrap code that only talks to the network: any OS or HTTP error raised inside is transient.
+
+    A failure is classed by where it happens, not by its type. A dropped network can surface as a plain OSError
+    or a PermissionError, which by type alone would look like a problem with the local file.
+    """
+    try:
+        yield
+    except (OSError, http.client.HTTPException) as error:
+        raise _Transient(str(error) or type(error).__name__) from error
 
 
 @dataclass(frozen=True)
@@ -99,13 +101,14 @@ class GitHubReleasesSource:
     def _retry_transient_errors(self, operation: str, action: Callable[[], ResultT]) -> ResultT:
         """Run `action` up to `max_attempts` times.
 
-        Server errors and failed connections are retried; rate limits, 4xx, and local disk errors are not.
+        Server errors and failed connections are retried. Rate limits, other statuses below 500 and local disk
+        errors are not.
         """
         last_error: Exception | None = None
         for attempt_number in range(1, self.max_attempts + 1):
             try:
                 return action()
-            except _RETRYABLE_ERRORS as error:
+            except _Transient as error:
                 last_error = error
                 if attempt_number < self.max_attempts:
                     time.sleep(self.backoff_seconds * attempt_number)
@@ -127,7 +130,9 @@ class GitHubReleasesSource:
                 ) from http_error
             if http_error.code < 500:
                 raise SourceError(f"HTTP {http_error.code} while {operation}") from http_error
-            raise
+            raise _Transient(str(http_error)) from http_error
+        except (OSError, http.client.HTTPException) as error:
+            raise _Transient(str(error) or type(error).__name__) from error
 
     def list_assets(self) -> UpstreamListing:
         headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT}
@@ -140,7 +145,8 @@ class GitHubReleasesSource:
             page_url = f"https://api.github.com/repos/{self.repo}/releases?per_page=100&page={page}"
 
             def read_release_page(page_url: str = page_url) -> list[dict]:
-                with self._open_request(urllib.request.Request(page_url, headers=headers), operation) as response:
+                page_request = urllib.request.Request(page_url, headers=headers)
+                with self._open_request(page_request, operation) as response, _network():
                     return json.load(response)
 
             release_page = self._retry_transient_errors(operation, read_release_page)
@@ -173,15 +179,21 @@ class GitHubReleasesSource:
             with self._open_request(request, operation) as response, open(dest_path, "wb") as output_file:
                 # What this response says it will send. The listing can describe an earlier file of another size.
                 declared_length = getattr(response, "headers", {}).get("Content-Length")
-                shutil.copyfileobj(response, output_file, DOWNLOAD_CHUNK_BYTES)
-                received_bytes = output_file.tell()
+                received_bytes = 0
+                while True:
+                    with _network():
+                        chunk = response.read(DOWNLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    output_file.write(chunk)
+                    received_bytes += len(chunk)
             expected_bytes = int(declared_length) if declared_length else asset.size_bytes
             if received_bytes < expected_bytes:  # http.client returns a body that ended early without raising
-                raise _TruncatedDownloadError(f"body ended after {received_bytes} of {expected_bytes} bytes")
+                raise _Transient(f"body ended after {received_bytes} of {expected_bytes} bytes")
 
         try:
             self._retry_transient_errors(operation, download_once)
-        except OSError as error:  # local filesystem error; network errors are handled inside _retry_transient_errors
+        except OSError as error:  # only opening or writing the destination can raise one: the network raises _Transient
             raise SourceError(f"cannot write {dest_path}: {error}") from error
 
 

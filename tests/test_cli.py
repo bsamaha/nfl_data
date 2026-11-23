@@ -14,6 +14,7 @@ from conftest import (
 from typer.testing import CliRunner
 
 from nfl_lake.cli import app
+from nfl_lake.pipeline import run_update
 
 cli_runner = CliRunner()
 
@@ -55,6 +56,18 @@ def test_update_publishes_where_the_readme_says_and_a_dry_run_writes_nothing(cli
         assert command_succeeded(result), result.output
     assert (lake.root_dir / "clean" / "stats" / STATS_FILENAME).exists()  # the path the README tells people to query
     assert [run["fetched"] for run in lake.load_run_records()] == [1, 0]
+
+
+def test_progress_still_reaches_stderr_after_a_command_has_finished(cli, upstream, lake, capsys):
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
+    assert command_succeeded(
+        cli("update", "--dry-run")
+    )  # sets logging up while stderr is the runner's, which then closes
+
+    run_update(build_catalog(stats=STATS_DATASET_SPEC), upstream.source, lake)  # logs its progress
+
+    progress = capsys.readouterr().err
+    assert progress and "Traceback" not in progress
 
 
 def test_failed_update_exits_1_and_status_still_exits_0(cli, upstream, lake):

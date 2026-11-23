@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import NoReturn
@@ -21,6 +22,18 @@ from .store import LakeLocked, LakeStore
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Ingest nflverse files into the local lake.")
 
 
+class _CurrentStderrHandler(logging.StreamHandler):
+    """Writes to whatever sys.stderr is when a record is emitted, not to the stream that existed at start-up."""
+
+    @property
+    def stream(self):
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, value) -> None:
+        pass  # StreamHandler.__init__ assigns one; there is nothing to keep
+
+
 @app.callback()
 def configure_cli(
     ctx: typer.Context,
@@ -29,8 +42,10 @@ def configure_cli(
     ctx.obj = catalog
     load_dotenv()
     log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+    handler = _CurrentStderrHandler()
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%SZ")
+    formatter.converter = time.gmtime  # UTC, like run ids and the manifest
+    handler.setFormatter(formatter)
     lake_logger = logging.getLogger("nfl_lake")
     lake_logger.handlers = [handler]
     lake_logger.setLevel(log_level)
