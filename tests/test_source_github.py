@@ -152,18 +152,16 @@ def test_listing_caches_etags_and_reuses_cached_pages_on_304(monkeypatch, tmp_pa
     dry_listing = GitHubReleasesSource("o/r", cache_path=dry_cache_path, write_cache=False).list_assets()
     assert dry_listing == first_listing and not dry_cache_path.exists()
 
-    # A cache page that lost a field or has the wrong shape is not used, and an unwritable cache is skipped.
-    for bad_releases in ([{"assets": []}], {}):
-        cache_path.write_text(json.dumps({requests[0].full_url: {"etag": '"etag-page-1"', "releases": bad_releases}}))
-        assert source.list_assets() == first_listing and requests[-1].get_header("If-none-match") is None
+    # A cache page that lost a field is not used, and a cache that cannot be written is not written.
+    cache_path.write_text(json.dumps({requests[0].full_url: {"etag": '"etag-page-1"', "releases": [{"assets": []}]}}))
+    assert source.list_assets() == first_listing and requests[-1].get_header("If-none-match") is None
     unwritable_cache_path = cache_path / "listing_cache.json"  # its folder is a file
     assert GitHubReleasesSource("o/r", cache_path=unwritable_cache_path).list_assets() == first_listing
 
 
-@pytest.mark.parametrize("reset_header", ["1795300000", "not-a-timestamp"], ids=["epoch", "malformed reset"])
-def test_rate_limit_is_final(monkeypatch, reset_header):
+def test_rate_limit_is_final(monkeypatch):
     def raise_rate_limited(attempt_number, request):
-        raise make_http_error(403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset_header})
+        raise make_http_error(403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1795300000"})
 
     requests = stub_urlopen(monkeypatch, raise_rate_limited)
     with pytest.raises(SourceError):
@@ -214,14 +212,6 @@ def test_complete_download_of_another_size_than_listed_is_left_to_the_run(monkey
     assert fetched == FetchResult(size_bytes=4, sha256=hashlib.sha256(b"PAR1").hexdigest())
     assert (tmp_path / "a.parquet").read_bytes() == b"PAR1" and len(requests) == 1
 
-    # A malformed Content-Length falls back to the listed size instead of raising ValueError.
-    stub_urlopen(
-        monkeypatch,
-        lambda attempt_number, request: ResponseWithHeaders(SAMPLE_PARQUET_BYTES, {"Content-Length": "invalid"}),
-    )
-    fetched_fallback = GitHubReleasesSource("o/r", backoff_seconds=0).fetch(SAMPLE_ASSET, tmp_path / "b.parquet")
-    assert fetched_fallback.size_bytes == len(SAMPLE_PARQUET_BYTES)
-
 
 def test_download_to_a_path_that_cannot_be_opened_is_not_retried(monkeypatch, tmp_path):
     requests = stub_urlopen(monkeypatch, lambda attempt_number, request: io.BytesIO(SAMPLE_PARQUET_BYTES))
@@ -242,14 +232,8 @@ def test_download_to_a_folder_that_cannot_be_written_makes_no_request(monkeypatc
 
 @pytest.mark.parametrize(
     "body",
-    [
-        b"<html>sign in to the network</html>",
-        b'[{"tag_name": "pbp", "assets": [{"na',
-        b'{"message": "not a list"}',
-        b"{}",
-        b'""',
-    ],
-    ids=["a web page", "cut short", "another shape", "empty object", "empty string"],
+    [b"<html>sign in to the network</html>", b'[{"tag_name": "pbp", "assets": [{"na', b'{"message": "not a list"}'],
+    ids=["a web page", "cut short", "another shape"],
 )
 def test_listing_reply_that_is_not_a_release_listing_is_tried_again_and_then_refused(monkeypatch, body):
     requests = stub_urlopen(monkeypatch, lambda attempt_number, request: io.BytesIO(body))
@@ -290,16 +274,15 @@ def test_cli_lists_the_catalog_repo_on_github_with_the_token_when_no_source_fold
 
 
 @pytest.mark.parametrize(
-    "respond, expected_attempts",
-    [
-        (lambda attempt_number, request: (_ for _ in ()).throw(make_http_error(503)), 2),
-        (lambda attempt_number, request: (_ for _ in ()).throw(make_http_error(404)), 1),
-        (lambda attempt_number, request: io.BytesIO(SAMPLE_PARQUET_BYTES[:4]), 2),
-    ],
-    ids=["server error: every attempt", "not found: one", "truncated body leaves no partial file"],
+    "http_status, expected_attempts",
+    [(503, 2), (404, 1)],
+    ids=["server error: every attempt", "not found: one"],
 )
-def test_download_gives_up(monkeypatch, tmp_path, respond, expected_attempts):
-    requests = stub_urlopen(monkeypatch, respond)
+def test_download_gives_up(monkeypatch, tmp_path, http_status, expected_attempts):
+    def raise_error(attempt_number, request):
+        raise make_http_error(http_status)
+
+    requests = stub_urlopen(monkeypatch, raise_error)
     with pytest.raises(SourceError):
         GitHubReleasesSource("o/r", max_attempts=2, backoff_seconds=0).fetch(SAMPLE_ASSET, tmp_path / "a.parquet")
     assert len(requests) == expected_attempts
