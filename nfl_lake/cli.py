@@ -48,12 +48,17 @@ def _open_lake() -> LakeStore:
     return LakeStore(os.getenv("NFL_LAKE_ROOT") or "data")
 
 
-def _open_source(catalog: Catalog) -> UpstreamSource:
+def _open_source(catalog: Catalog, lake: LakeStore, *, dry_run: bool = False) -> UpstreamSource:
     """Upstream source: NFL_LAKE_SOURCE_DIR reads a local mirror instead of GitHub."""
     local_source_dir = os.getenv("NFL_LAKE_SOURCE_DIR")
     if local_source_dir:
         return LocalDirSource(local_source_dir)
-    return GitHubReleasesSource(catalog.source.repo, token=os.getenv("GITHUB_TOKEN") or None)
+    return GitHubReleasesSource(
+        catalog.source.repo,
+        token=os.getenv("GITHUB_TOKEN") or None,
+        cache_path=lake.manifest_dir / "listing_cache.json",
+        write_cache=not dry_run,
+    )
 
 
 def _parse_dataset_names(raw_value: str) -> list[str]:
@@ -106,7 +111,8 @@ def _handle_cli_errors() -> Iterator[None]:
     except UpdateFailed as error:
         if error.published_file_count:
             publish_outcome = (
-                f"{error.published_file_count} file(s) were published before the failure; run update again"
+                f"{error.published_file_count} file(s) were published; "
+                "the failing dataset(s) were left unchanged — run update again"
             )
         else:
             publish_outcome = "nothing was published; the clean layer is unchanged"
@@ -118,7 +124,7 @@ def _handle_cli_errors() -> Iterator[None]:
 def _cmd_update(args: argparse.Namespace) -> None:
     catalog = load_catalog(args.catalog)
     lake = _open_lake()
-    source = _open_source(catalog)
+    source = _open_source(catalog, lake, dry_run=args.dry_run)
     selected_datasets = catalog.select_datasets(args.datasets, exclude_names=args.skip)
     if args.skip is not None and not selected_datasets:
         raise ValueError("--skip leaves no dataset to update")
@@ -231,7 +237,7 @@ def _build_parser() -> argparse.ArgumentParser:
     update_parser = add_command(
         "update",
         _cmd_update,
-        "Fetch what changed upstream, rebuild the clean layer, and publish only if every file passed.",
+        "Fetch what changed upstream, rebuild the clean layer, and publish each passing dataset.",
     )
     update_parser.add_argument(
         "--datasets", type=_parse_dataset_names, help="Comma-separated dataset names. Default: every dataset."
@@ -256,7 +262,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show what would be fetched and rebuilt, and change nothing.",
     )
-    update_parser.add_argument("--workers", type=_parse_workers, default=4, help="Parallel downloads (1-16).")
+    update_parser.add_argument("--workers", type=_parse_workers, default=8, help="Parallel downloads (1-16).")
 
     add_command("status", _cmd_status, "Show what is published per dataset, and how the last run ended.")
 

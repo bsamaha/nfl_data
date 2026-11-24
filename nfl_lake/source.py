@@ -9,16 +9,17 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
-import shutil
+import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import NamedTuple, Protocol, TypeVar
 
 from .store import format_utc_iso
 
@@ -41,6 +42,10 @@ class ListingMismatch(SourceError):
 
 class _Transient(Exception):
     """A failure of the network or the server, which another attempt may get past."""
+
+
+class _NotModified(Exception):
+    """Raised when a conditional request with `If-None-Match` returns HTTP 304."""
 
 
 @contextmanager
@@ -66,6 +71,11 @@ class UpstreamAsset:
     download_url: str
 
 
+class FetchResult(NamedTuple):
+    size_bytes: int
+    sha256: str
+
+
 UpstreamListing = dict[str, dict[str, UpstreamAsset]]  # release_tag -> filename -> asset
 
 
@@ -75,7 +85,9 @@ class UpstreamSource(Protocol):
 
     def list_assets(self) -> UpstreamListing: ...
 
-    def fetch(self, asset: UpstreamAsset, dest_path: Path) -> None: ...
+    def list_release_assets(self, release_tag: str) -> dict[str, UpstreamAsset]: ...
+
+    def fetch(self, asset: UpstreamAsset, dest_path: Path) -> FetchResult: ...
 
 
 def compute_file_sha256(file_path: Path) -> str:
@@ -83,17 +95,83 @@ def compute_file_sha256(file_path: Path) -> str:
         return hashlib.file_digest(file_handle, "sha256").hexdigest()
 
 
+def _slim_release_payload(release_payload: dict) -> dict:
+    return {
+        "tag_name": release_payload["tag_name"],
+        "assets": [
+            {
+                "name": asset_payload["name"],
+                "size": int(asset_payload["size"]),
+                "updated_at": asset_payload["updated_at"],
+                "digest": asset_payload.get("digest"),
+                "browser_download_url": asset_payload["browser_download_url"],
+            }
+            for asset_payload in release_payload.get("assets", [])
+        ],
+    }
+
+
+def _parse_release_assets(release_tag: str, release_payload: dict) -> dict[str, UpstreamAsset]:
+    assets_by_filename: dict[str, UpstreamAsset] = {}
+    for asset_payload in release_payload.get("assets", []):
+        raw_digest = asset_payload.get("digest") or ""
+        assets_by_filename[asset_payload["name"]] = UpstreamAsset(
+            release_tag=release_tag,
+            filename=asset_payload["name"],
+            size_bytes=int(asset_payload["size"]),
+            updated_at=asset_payload["updated_at"],
+            sha256=raw_digest.split(":", 1)[1] if raw_digest.startswith("sha256:") else None,
+            download_url=asset_payload["browser_download_url"],
+        )
+    return assets_by_filename
+
+
 class GitHubReleasesSource:
-    """All releases of one GitHub repository: one API call per 100 releases."""
+    """All releases of one GitHub repository: one API call per 100 releases, with optional ETag caching."""
 
     # On 23 Nov 2026 the listing still described the previous schedules file over a minute after it was replaced.
     listing_lag_seconds = 60.0
 
-    def __init__(self, repo: str, token: str | None = None, max_attempts: int = 3, backoff_seconds: float = 2.0):
+    def __init__(
+        self,
+        repo: str,
+        token: str | None = None,
+        max_attempts: int = 3,
+        backoff_seconds: float = 2.0,
+        cache_path: Path | None = None,
+        write_cache: bool = True,
+    ):
         self.repo = repo
         self.token = token
         self.max_attempts = max_attempts
         self.backoff_seconds = backoff_seconds
+        self.cache_path = Path(cache_path) if cache_path is not None else None
+        self.write_cache = write_cache
+
+    def _api_headers(self, etag: str | None = None) -> dict[str, str]:
+        headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if etag:
+            headers["If-None-Match"] = etag
+        return headers
+
+    def _load_etag_cache(self) -> dict[str, dict]:
+        if self.cache_path is None or not self.cache_path.is_file():
+            return {}
+        try:
+            loaded = json.loads(self.cache_path.read_text(encoding="utf-8"))
+            return loaded if isinstance(loaded, dict) else {}
+        except OSError, ValueError:
+            return {}
+
+    def _save_etag_cache(self, cache: dict[str, dict]) -> None:
+        if self.cache_path is None or not self.write_cache:
+            return
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.cache_path.with_suffix(".json.tmp")
+        temp_path.write_text(json.dumps(cache, sort_keys=True), encoding="utf-8")
+        os.replace(temp_path, self.cache_path)
 
     def _retry_transient_errors(self, operation: str, action: Callable[[], ResultT]) -> ResultT:
         """Run `action` up to `max_attempts` times.
@@ -111,12 +189,16 @@ class GitHubReleasesSource:
                     time.sleep(self.backoff_seconds * attempt_number)
         raise SourceError(f"failed after {self.max_attempts} attempts while {operation}: {last_error}") from last_error
 
-    def _open_request(self, request: urllib.request.Request, operation: str):
+    def _open_request(self, request: urllib.request.Request, operation: str, *, allow_not_modified: bool = False):
         """Perform one HTTP request. A rate limit or any status below 500 is final, so it becomes a SourceError here."""
         with _network():
             try:
                 return urllib.request.urlopen(request, timeout=120)
             except urllib.error.HTTPError as http_error:
+                if allow_not_modified and http_error.code == 304:
+                    if http_error.fp is not None:
+                        http_error.close()
+                    raise _NotModified from http_error
                 if http_error.code in (403, 429) and http_error.headers.get("X-RateLimit-Remaining") == "0":
                     reset_epoch = http_error.headers.get("X-RateLimit-Reset")
                     reset_time_utc = (
@@ -131,39 +213,77 @@ class GitHubReleasesSource:
                 raise  # 5xx propagates into _network(), which converts it to _Transient
 
     def list_assets(self) -> UpstreamListing:
-        headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
         operation = f"listing {self.repo} releases"
+        cached_pages = self._load_etag_cache()
+        updated_cache: dict[str, dict] = {}
         listing: UpstreamListing = {}
         page = 1
         while True:
             page_url = f"https://api.github.com/repos/{self.repo}/releases?per_page=100&page={page}"
+            cached_page = cached_pages.get(page_url)
+            cached_etag = (
+                cached_page["etag"]
+                if isinstance(cached_page, dict)
+                and isinstance(cached_page.get("etag"), str)
+                and isinstance(cached_page.get("releases"), list)
+                else None
+            )
+            headers = self._api_headers(etag=cached_etag)
 
-            def read_release_page(page_url: str = page_url) -> list[dict]:
+            def read_release_page(
+                page_url: str = page_url,
+                headers: dict[str, str] = headers,
+                cached_page: dict | None = cached_page,
+                cached_etag: str | None = cached_etag,
+            ) -> tuple[list[dict], str | None]:
                 page_request = urllib.request.Request(page_url, headers=headers)
-                with self._open_request(page_request, operation) as response, _network():
-                    return json.load(response)
+                try:
+                    with self._open_request(
+                        page_request, operation, allow_not_modified=cached_etag is not None
+                    ) as response:
+                        with _network():
+                            payload = json.load(response)
+                        response_etag = getattr(response, "headers", {}).get("ETag")
+                        return [_slim_release_payload(release_payload) for release_payload in payload], response_etag
+                except _NotModified:
+                    assert cached_page is not None
+                    return cached_page["releases"], cached_etag
 
-            release_page = self._retry_transient_errors(operation, read_release_page)
+            release_page, response_etag = self._retry_transient_errors(operation, read_release_page)
+            if response_etag:
+                updated_cache[page_url] = {"etag": response_etag, "releases": release_page}
             for release_payload in release_page:
                 release_tag = release_payload["tag_name"]
-                assets_by_filename = listing.setdefault(release_tag, {})
-                for asset_payload in release_payload.get("assets", []):
-                    raw_digest = asset_payload.get("digest") or ""
-                    assets_by_filename[asset_payload["name"]] = UpstreamAsset(
-                        release_tag=release_tag,
-                        filename=asset_payload["name"],
-                        size_bytes=int(asset_payload["size"]),
-                        updated_at=asset_payload["updated_at"],
-                        sha256=raw_digest.split(":", 1)[1] if raw_digest.startswith("sha256:") else None,
-                        download_url=asset_payload["browser_download_url"],
-                    )
+                listing.setdefault(release_tag, {}).update(_parse_release_assets(release_tag, release_payload))
             if len(release_page) < 100:
+                if updated_cache != cached_pages and updated_cache:
+                    self._save_etag_cache(updated_cache)
                 return listing
             page += 1
 
-    def fetch(self, asset: UpstreamAsset, dest_path: Path) -> None:
+    def list_release_assets(self, release_tag: str) -> dict[str, UpstreamAsset]:
+        """Fetch the fresh asset listing for one release tag without ETag caching (used after a listing mismatch)."""
+        encoded_tag = urllib.parse.quote(release_tag, safe="")
+        release_url = f"https://api.github.com/repos/{self.repo}/releases/tags/{encoded_tag}"
+        headers = self._api_headers()
+        operation = f"listing {self.repo} release {release_tag}"
+
+        def read_release() -> dict | None:
+            request = urllib.request.Request(release_url, headers=headers)
+            try:
+                with self._open_request(request, operation) as response, _network():
+                    return json.load(response)
+            except SourceError as error:
+                if isinstance(error.__cause__, urllib.error.HTTPError) and error.__cause__.code == 404:
+                    return None
+                raise
+
+        release_payload = self._retry_transient_errors(operation, read_release)
+        if release_payload is None:
+            return {}
+        return _parse_release_assets(release_tag, release_payload)
+
+    def fetch(self, asset: UpstreamAsset, dest_path: Path) -> FetchResult:
         dest_path = Path(dest_path)
         if not dest_path.parent.is_dir():
             raise SourceError(f"cannot write {dest_path}: folder {dest_path.parent} does not exist")
@@ -171,7 +291,8 @@ class GitHubReleasesSource:
         request = urllib.request.Request(asset.download_url, headers={"User-Agent": USER_AGENT})
         operation = f"downloading {asset.filename}"
 
-        def download_once() -> None:
+        def download_once() -> FetchResult:
+            hasher = hashlib.sha256()
             with self._open_request(request, operation) as response, open(dest_path, "wb") as output_file:
                 # What this response says it will send. The listing can describe an earlier file of another size.
                 declared_length = getattr(response, "headers", {}).get("Content-Length")
@@ -182,13 +303,15 @@ class GitHubReleasesSource:
                     if not chunk:
                         break
                     output_file.write(chunk)
+                    hasher.update(chunk)
                     received_bytes += len(chunk)
             expected_bytes = int(declared_length) if declared_length else asset.size_bytes
             if received_bytes < expected_bytes:  # http.client returns a body that ended early without raising
                 raise _Transient(f"body ended after {received_bytes} of {expected_bytes} bytes")
+            return FetchResult(size_bytes=received_bytes, sha256=hasher.hexdigest())
 
         try:
-            self._retry_transient_errors(operation, download_once)
+            return self._retry_transient_errors(operation, download_once)
         except OSError as error:  # only opening or writing the destination can raise one: the network raises _Transient
             raise SourceError(f"cannot write {dest_path}: {error}") from error
 
@@ -201,24 +324,42 @@ class LocalDirSource:
     def __init__(self, root_dir: str | Path):
         self.root_dir = Path(root_dir).resolve()
 
+    def _list_release_dir(self, release_dir: Path) -> dict[str, UpstreamAsset]:
+        assets_by_filename: dict[str, UpstreamAsset] = {}
+        for file_path in sorted(path for path in release_dir.iterdir() if path.is_file()):
+            file_stat = file_path.stat()
+            updated_at = format_utc_iso(datetime.fromtimestamp(file_stat.st_mtime, UTC))
+            assets_by_filename[file_path.name] = UpstreamAsset(
+                release_tag=release_dir.name,
+                filename=file_path.name,
+                size_bytes=file_stat.st_size,
+                updated_at=updated_at,
+                sha256=compute_file_sha256(file_path),
+                download_url=file_path.as_uri(),
+            )
+        return assets_by_filename
+
     def list_assets(self) -> UpstreamListing:
         if not self.root_dir.is_dir():
             raise SourceError(f"source folder {self.root_dir} does not exist")
-        listing: UpstreamListing = {}
-        for release_dir in sorted(path for path in self.root_dir.iterdir() if path.is_dir()):
-            assets_by_filename = listing.setdefault(release_dir.name, {})
-            for file_path in sorted(path for path in release_dir.iterdir() if path.is_file()):
-                file_stat = file_path.stat()
-                updated_at = format_utc_iso(datetime.fromtimestamp(file_stat.st_mtime, UTC))
-                assets_by_filename[file_path.name] = UpstreamAsset(
-                    release_tag=release_dir.name,
-                    filename=file_path.name,
-                    size_bytes=file_stat.st_size,
-                    updated_at=updated_at,
-                    sha256=compute_file_sha256(file_path),
-                    download_url=file_path.as_uri(),
-                )
-        return listing
+        return {
+            release_dir.name: self._list_release_dir(release_dir)
+            for release_dir in sorted(path for path in self.root_dir.iterdir() if path.is_dir())
+        }
 
-    def fetch(self, asset: UpstreamAsset, dest_path: Path) -> None:
-        shutil.copyfile(self.root_dir / asset.release_tag / asset.filename, dest_path)
+    def list_release_assets(self, release_tag: str) -> dict[str, UpstreamAsset]:
+        if not self.root_dir.is_dir():
+            raise SourceError(f"source folder {self.root_dir} does not exist")
+        release_dir = self.root_dir / release_tag
+        return self._list_release_dir(release_dir) if release_dir.is_dir() else {}
+
+    def fetch(self, asset: UpstreamAsset, dest_path: Path) -> FetchResult:
+        src_path = self.root_dir / asset.release_tag / asset.filename
+        hasher = hashlib.sha256()
+        copied_bytes = 0
+        with open(src_path, "rb") as src_handle, open(dest_path, "wb") as dest_handle:
+            while chunk := src_handle.read(DOWNLOAD_CHUNK_BYTES):
+                dest_handle.write(chunk)
+                hasher.update(chunk)
+                copied_bytes += len(chunk)
+        return FetchResult(size_bytes=copied_bytes, sha256=hasher.hexdigest())

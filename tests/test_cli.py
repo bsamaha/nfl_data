@@ -146,14 +146,20 @@ def test_datasets_and_skip_options_limit_the_run(make_cli, upstream, lake):
     def published_datasets():
         return sorted(path.name for path in lake.clean_dir.iterdir())
 
-    upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame(targets=8))
     upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1", "g1"]}))  # breaks its key
 
-    assert command_refused(cli("update")) and not lake.clean_dir.exists()
-    assert command_refused(cli("update", "--skip", "games,stats"))  # nothing left to update
+    assert command_refused(cli("update", "--skip", "games,stats")) and not lake.clean_dir.exists()
     result = cli("update", "--skip", "games")
     assert command_succeeded(result), result.output
     assert published_datasets() == ["stats"]
+
+    # Without --skip, the broken dataset causes exit 1 while the healthy dataset still publishes its update.
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame(targets=10))
+    assert command_refused(cli("update"))
+    assert published_datasets() == ["stats"]
+    clean_stats = pl.read_parquet(lake.clean_file_path("stats", STATS_FILENAME))
+    assert clean_stats.filter(pl.col("player_id") == "00-001")["targets"].item() == 10
 
     upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1"]}))  # games is fixed
     upstream.put("stats_player", STATS_FILENAME, pl.concat([make_stats_frame(), make_stats_frame()]))  # stats breaks

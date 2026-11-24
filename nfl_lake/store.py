@@ -4,6 +4,7 @@
 <root>/clean/<dataset>/<file name>                                 latest version, contract applied
 <root>/rejects/<dataset>/<file name>                               rows set aside for a null key
 <root>/manifest/clean_state.json                                   what each clean file was built from
+<root>/manifest/listing_cache.json                                 cached GitHub release pages with ETags
 <root>/manifest/runs.jsonl                                         one line per update run
 <root>/_staging/<run_id>/                                          files being fetched and built; removed after the run
 <root>/.update.lock                                                present while an update runs

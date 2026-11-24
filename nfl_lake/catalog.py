@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from pathlib import Path
 from typing import Literal
@@ -74,15 +72,14 @@ class Dataset(DatasetSpec):
         return True, int(regex_match.group("season")) if self.is_seasonal else None
 
     @property
-    def contract_fingerprint(self) -> str:
-        """Changes whenever the rules that shape the clean file change, forcing a rebuild."""
-        payload = {
+    def contract(self) -> dict:
+        """Rules that shape the clean file; stored verbatim in clean_state.json so any change forces a rebuild."""
+        return {
             "build": CLEAN_BUILD_VERSION,
             "key": list(self.key),
             "reject_null_keys": self.reject_null_keys,
             "keep_last_by": self.keep_last_by,
         }
-        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
 
 class Catalog(_StrictModel):

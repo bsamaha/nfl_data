@@ -1,6 +1,7 @@
 """What an update run guarantees, checked against a fake upstream folder."""
 
 import dataclasses
+import hashlib
 import os
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from conftest import (
 from polars.testing import assert_frame_equal
 
 from nfl_lake.pipeline import UpdateFailed, run_update, verify_lake
-from nfl_lake.source import LocalDirSource
+from nfl_lake.source import FetchResult, LocalDirSource
 from nfl_lake.store import LakeLocked
 
 
@@ -47,8 +48,14 @@ def test_first_run_publishes_and_an_identical_second_run_changes_nothing(upstrea
     first_summary = run_update(catalog, upstream.source, lake)
     assert first_summary.fetched_file_ids == first_summary.rebuilt_file_ids == [STATS_FILE_ID]
     assert not lake.raw_dir.exists()  # default history is latest: no raw copy is kept on disk
-    # same columns and types, sorted by key
+    # same columns and types, sorted by key, with a plain-dict contract in clean_state.json
     assert_frame_equal(read_clean_frame(lake), make_stats_frame().sort("player_id", "game_id"))
+    assert lake.load_clean_state()[STATS_FILE_ID]["contract"] == {
+        "build": 1,
+        "key": ["player_id", "game_id"],
+        "reject_null_keys": False,
+        "keep_last_by": None,
+    }
 
     clean_file_path = lake.clean_file_path("stats", STATS_FILENAME)
     clean_before = (clean_file_path.read_bytes(), clean_file_path.stat().st_mtime_ns)
@@ -103,27 +110,73 @@ def test_bad_file_fails_the_run_and_keeps_the_published_version(upstream, lake):
     assert published_targets(lake) == 10
 
 
-def test_one_bad_file_blocks_every_publish_in_the_run(upstream, lake):
+def test_one_bad_file_blocks_its_dataset_while_other_datasets_still_publish(upstream, lake):
     catalog = build_catalog(stats=STATS_DATASET_SPEC, games={**GAMES_DATASET_SPEC, "history": "all"})
+    stats_2025_filename = "stats_player_week_2025.parquet"
 
     def make_games_frame(*game_ids):
         return pl.DataFrame({"game_id": list(game_ids)})
 
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame(8))
+    upstream.put("stats_player", stats_2025_filename, make_stats_frame(8))
     upstream.put("schedules", "games.parquet", make_games_frame("g1"))
     run_update(catalog, upstream.source, lake)
-    raw_count_before = len(stored_raw_paths(lake, "games", "games.parquet"))
 
-    upstream.put("stats_player", STATS_FILENAME, make_stats_frame(10))  # a good change
-    upstream.put("schedules", "games.parquet", make_games_frame("g1", "g1"))  # a bad one
-    with pytest.raises(UpdateFailed):
-        run_update(catalog, upstream.source, lake)
-    assert published_targets(lake) == 8
-    assert len(stored_raw_paths(lake, "games", "games.parquet")) == raw_count_before  # failed run writes no raw file
-
+    # One broken season in stats blocks all of stats (including the good 2024 update), while games still publishes.
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame(10))
+    upstream.put("stats_player", stats_2025_filename, pl.concat([make_stats_frame(10), make_stats_frame(11)]))
     upstream.put("schedules", "games.parquet", make_games_frame("g1", "g2"))
+    with pytest.raises(UpdateFailed) as first_failure:
+        run_update(catalog, upstream.source, lake)
+    assert first_failure.value.published_file_count == 1
+    assert published_targets(lake) == 8  # neither season of stats published
+    assert read_clean_frame(lake, "games", "games.parquet").height == 2
+    assert len(stored_raw_paths(lake, "games", "games.parquet")) == 2
+
+    # Fixing stats while breaking games publishes both stats seasons and writes no new raw file for games.
+    upstream.put("stats_player", stats_2025_filename, make_stats_frame(12))
+    upstream.put("schedules", "games.parquet", make_games_frame("g1", "g1"))
+    with pytest.raises(UpdateFailed) as second_failure:
+        run_update(catalog, upstream.source, lake)
+    assert second_failure.value.published_file_count == 2
+    assert published_targets(lake) == 10
+    assert len(stored_raw_paths(lake, "games", "games.parquet")) == 2  # failed dataset writes no raw snapshot
+
+    # Fixing games finishes the run without re-fetching or rebuilding stats.
+    upstream.put("schedules", "games.parquet", make_games_frame("g1", "g2", "g3"))
     summary = run_update(catalog, upstream.source, lake)
-    assert sorted(summary.rebuilt_file_ids) == [GAMES_FILE_ID, STATS_FILE_ID] and published_targets(lake) == 10
+    assert summary.fetched_file_ids == summary.rebuilt_file_ids == [GAMES_FILE_ID]
+
+
+def test_metadata_only_upstream_rebuild_skips_rewriting_clean_and_raw(upstream, lake):
+    catalog = build_catalog(stats={**STATS_DATASET_SPEC, "history": "all", "reject_null_keys": True})
+    player_ids = [None, *(f"p{index:03}" for index in range(199))]
+    frame = pl.DataFrame({"player_id": player_ids, "game_id": ["g1"] * 200})
+
+    upstream.put("stats_player", STATS_FILENAME, frame, metadata={"nflverse_timestamp": "2026-11-21 10:00:00 UTC"})
+    run_update(catalog, upstream.source, lake)
+
+    clean_path = lake.clean_file_path("stats", STATS_FILENAME)
+    rejects_path = lake.rejects_file_path("stats", STATS_FILENAME)
+    clean_mtime_before = clean_path.stat().st_mtime_ns
+    rejects_mtime_before = rejects_path.stat().st_mtime_ns
+    raw_paths_before = stored_raw_paths(lake)
+
+    # Identical rows with a newer Parquet timestamp change the raw checksum without changing clean or rejected rows.
+    upstream.put("stats_player", STATS_FILENAME, frame, metadata={"nflverse_timestamp": "2026-11-22 10:00:00 UTC"})
+    refresh_summary = run_update(catalog, upstream.source, lake)
+    assert refresh_summary.fetched_file_ids == [STATS_FILE_ID]
+    assert refresh_summary.rebuilt_file_ids == []
+    assert refresh_summary.unchanged_file_count == 1
+    assert clean_path.stat().st_mtime_ns == clean_mtime_before
+    assert rejects_path.stat().st_mtime_ns == rejects_mtime_before
+    assert stored_raw_paths(lake) == raw_paths_before
+    assert lake.load_clean_state()[STATS_FILE_ID]["upstream_built_at"] == "2026-11-22 10:00:00 UTC"
+    assert verify_lake(catalog, lake, deep=True) == (1, [])
+
+    # Because manifest metadata was refreshed, the next run fetches nothing.
+    followup_summary = run_update(catalog, upstream.source, lake)
+    assert followup_summary.fetched_file_ids == followup_summary.rebuilt_file_ids == []
 
 
 def test_failure_while_publishing_is_counted_and_the_next_run_finishes(upstream, lake):
@@ -288,26 +341,35 @@ def test_missing_or_deselected_upstream_files_are_errors_not_skips(upstream, lak
 class TruncatingSource(LocalDirSource):
     def fetch(self, asset, dest_path):
         data = (self.root_dir / asset.release_tag / asset.filename).read_bytes()
-        Path(dest_path).write_bytes(data[: len(data) // 2])
+        truncated = data[: len(data) // 2]
+        Path(dest_path).write_bytes(truncated)
+        return FetchResult(size_bytes=len(truncated), sha256=hashlib.sha256(truncated).hexdigest())
 
 
 class BitFlippingSource(LocalDirSource):
     def fetch(self, asset, dest_path):
         data = bytearray((self.root_dir / asset.release_tag / asset.filename).read_bytes())
         data[64] ^= 0xFF  # inside the first column's data; the size and the Parquet footer are untouched
-        Path(dest_path).write_bytes(bytes(data))
+        corrupted = bytes(data)
+        Path(dest_path).write_bytes(corrupted)
+        return FetchResult(size_bytes=len(corrupted), sha256=hashlib.sha256(corrupted).hexdigest())
 
 
 class NoChecksumsSource(LocalDirSource):
     """An upstream that publishes no checksum for its files."""
 
+    @staticmethod
+    def _strip_checksums(release_assets):
+        return {filename: dataclasses.replace(asset, sha256=None) for filename, asset in release_assets.items()}
+
     def list_assets(self):
         return {
-            release_tag: {
-                filename: dataclasses.replace(asset, sha256=None) for filename, asset in release_assets.items()
-            }
+            release_tag: self._strip_checksums(release_assets)
             for release_tag, release_assets in super().list_assets().items()
         }
+
+    def list_release_assets(self, release_tag):
+        return self._strip_checksums(super().list_release_assets(release_tag))
 
 
 @pytest.mark.parametrize("damaged_source_cls", [TruncatingSource, BitFlippingSource])
@@ -328,10 +390,18 @@ class StaleListingSource(LocalDirSource):
         self.stale_listings = stale_listings
         self.listing_lag_seconds = listing_lag_seconds
         self.listings_served = 0
+        self.rechecked_tags: list[str] = []
 
     def list_assets(self):
         self.listings_served += 1
         return self.listing_at_creation if self.listings_served <= self.stale_listings else super().list_assets()
+
+    def list_release_assets(self, release_tag):
+        self.listings_served += 1
+        self.rechecked_tags.append(release_tag)
+        if self.listings_served <= self.stale_listings:
+            return self.listing_at_creation.get(release_tag, {})
+        return super().list_release_assets(release_tag)
 
 
 @pytest.mark.parametrize(
@@ -354,6 +424,7 @@ def test_file_replaced_upstream_after_the_listing_is_fetched_against_a_new_listi
     run_update(catalog, source, lake)
 
     assert source.listings_served == stale_listings + 1
+    assert source.rechecked_tags == ["stats_player"] * stale_listings
     (raw_file_path,) = stored_raw_paths(lake)
     assert raw_file_path.read_bytes() == upstream_file_path.read_bytes()
     assert_frame_equal(read_clean_frame(lake), replacement.sort("player_id", "game_id"))

@@ -4,6 +4,7 @@ These are the only tests that replace a library call: a rate limit, a server err
 cannot be produced on demand any other way.
 """
 
+import hashlib
 import http.client
 import io
 import json
@@ -15,7 +16,7 @@ import yaml
 
 from nfl_lake import source as source_module
 from nfl_lake.cli import main
-from nfl_lake.source import GitHubReleasesSource, SourceError, UpstreamAsset
+from nfl_lake.source import FetchResult, GitHubReleasesSource, SourceError, UpstreamAsset
 
 SAMPLE_UPDATED_AT = "2026-11-21T16:46:06Z"
 SAMPLE_ASSET = UpstreamAsset(
@@ -81,12 +82,19 @@ class NetworkGoneResponse(io.BytesIO):
         raise OSError(10051, "A socket operation was attempted to an unreachable network")
 
 
-class ResponseWithLength(io.BytesIO):
+class ResponseWithHeaders(io.BytesIO):
+    """A response body carrying HTTP headers (e.g. Content-Length or ETag)."""
+
+    def __init__(self, body: bytes, headers: dict[str, str]):
+        super().__init__(body)
+        self.headers = headers
+
+
+class ResponseWithLength(ResponseWithHeaders):
     """A body that comes with a Content-Length header, as a real download does."""
 
     def __init__(self, body: bytes, content_length: int):
-        super().__init__(body)
-        self.headers = {"Content-Length": str(content_length)}
+        super().__init__(body, {"Content-Length": str(content_length)})
 
 
 def raise_connection_refused():
@@ -118,6 +126,48 @@ def test_listing_pages_through_every_release_and_reads_the_checksum(monkeypatch)
     )
     assert listing["old"]["b.parquet"].sha256 is None  # no checksum published for this file
     assert requests[0].get_header("Authorization") == "Bearer t0ken"
+
+
+def test_listing_caches_etags_and_reuses_cached_pages_on_304(monkeypatch, tmp_path):
+    cache_path = tmp_path / "manifest" / "listing_cache.json"
+    release_page = [make_release_payload("pbp", "play_by_play_2026.parquet")]
+
+    def respond(attempt_number, request):
+        if request.get_header("If-none-match") == '"etag-page-1"':
+            raise make_http_error(304)
+        return ResponseWithHeaders(json.dumps(release_page).encode(), {"ETag": '"etag-page-1"'})
+
+    requests = stub_urlopen(monkeypatch, respond)
+
+    source = GitHubReleasesSource("o/r", cache_path=cache_path)
+    first_listing = source.list_assets()
+    assert cache_path.is_file()
+    assert requests[0].get_header("If-none-match") is None
+
+    second_listing = source.list_assets()
+    assert requests[1].get_header("If-none-match") == '"etag-page-1"'
+    assert second_listing == first_listing
+
+    dry_cache_path = tmp_path / "dry" / "listing_cache.json"
+    dry_listing = GitHubReleasesSource("o/r", cache_path=dry_cache_path, write_cache=False).list_assets()
+    assert dry_listing == first_listing and not dry_cache_path.exists()
+
+
+def test_list_release_assets_queries_one_tag_and_handles_missing_tag(monkeypatch):
+    def respond(attempt_number, request):
+        if request.full_url.endswith("/releases/tags/pbp"):
+            return io.BytesIO(json.dumps(make_release_payload("pbp", "a.parquet")).encode())
+        raise make_http_error(404)
+
+    requests = stub_urlopen(monkeypatch, respond)
+    source = GitHubReleasesSource("o/r", backoff_seconds=0)
+
+    pbp_assets = source.list_release_assets("pbp")
+    assert set(pbp_assets) == {"a.parquet"}
+    assert source.list_release_assets("missing") == {}
+    assert len(requests) == 2
+    assert requests[0].full_url.endswith("/repos/o/r/releases/tags/pbp")
+    assert requests[1].full_url.endswith("/repos/o/r/releases/tags/missing")
 
 
 def test_rate_limit_is_final(monkeypatch):
@@ -155,8 +205,11 @@ def test_download_is_retried_and_sends_no_token(monkeypatch, tmp_path, first_res
         lambda attempt_number, request: first_response() if attempt_number == 1 else io.BytesIO(SAMPLE_PARQUET_BYTES),
     )
 
-    GitHubReleasesSource("o/r", token="t0ken", backoff_seconds=0).fetch(SAMPLE_ASSET, tmp_path / "a.parquet")
+    fetched = GitHubReleasesSource("o/r", token="t0ken", backoff_seconds=0).fetch(SAMPLE_ASSET, tmp_path / "a.parquet")
 
+    assert fetched == FetchResult(
+        size_bytes=len(SAMPLE_PARQUET_BYTES), sha256=hashlib.sha256(SAMPLE_PARQUET_BYTES).hexdigest()
+    )
     assert (tmp_path / "a.parquet").read_bytes() == SAMPLE_PARQUET_BYTES and len(requests) == 2
     assert all(request.get_header("Authorization") is None for request in requests)  # download host is not GitHub's API
 
@@ -165,8 +218,9 @@ def test_complete_download_of_another_size_than_listed_is_left_to_the_run(monkey
     # The listing can describe an earlier file. The body is whole by its own length, so nothing is retried here.
     requests = stub_urlopen(monkeypatch, lambda attempt_number, request: ResponseWithLength(b"PAR1", 4))
 
-    GitHubReleasesSource("o/r", backoff_seconds=0).fetch(SAMPLE_ASSET, tmp_path / "a.parquet")
+    fetched = GitHubReleasesSource("o/r", backoff_seconds=0).fetch(SAMPLE_ASSET, tmp_path / "a.parquet")
 
+    assert fetched == FetchResult(size_bytes=4, sha256=hashlib.sha256(b"PAR1").hexdigest())
     assert (tmp_path / "a.parquet").read_bytes() == b"PAR1" and len(requests) == 1
 
 

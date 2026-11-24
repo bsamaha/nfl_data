@@ -20,10 +20,16 @@ class FakeUpstream:
     def __init__(self, root_dir: Path):
         self.root_dir = root_dir
 
-    def put(self, release_tag: str, filename: str, frame: pl.DataFrame) -> Path:
+    def put(
+        self,
+        release_tag: str,
+        filename: str,
+        frame: pl.DataFrame,
+        metadata: dict[str, str] | None = None,
+    ) -> Path:
         asset_path = self.root_dir / release_tag / filename
         asset_path.parent.mkdir(parents=True, exist_ok=True)
-        frame.write_parquet(asset_path)
+        frame.write_parquet(asset_path, metadata=metadata)
         return asset_path
 
     def remove(self, release_tag: str, filename: str) -> None:

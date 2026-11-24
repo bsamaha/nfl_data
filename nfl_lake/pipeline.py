@@ -1,15 +1,17 @@
-"""One update run: list upstream, fetch what changed, rebuild what depends on it, publish only if every file passed.
+"""One update run: list upstream, fetch what changed, rebuild what depends on it, publish each passing dataset.
 
-A run has three phases, and each must finish cleanly before the next starts.
+Each dataset runs through three phases atomically so one broken upstream dataset does not discard good
+downloads from the rest:
 
-1. Fetch. Every file whose upstream copy or contract needs rebuilding is downloaded into staging, verified,
-   and checked as readable Parquet (reusing the stored raw snapshot when a `history: all` contract changes).
-2. Build. Each target is rebuilt into a staging folder and checked against its contract.
-3. Publish. Only if every build passed are the staged files moved into clean/ (and raw/ for `history: all`).
+1. Fetch. Files needing rebuild are downloaded into staging, verified via streaming SHA-256, and checked
+   as readable Parquet (reusing the stored raw snapshot when a `history: all` contract changes).
+2. Build. Each file is rebuilt into staging and checked against its contract. If clean output bytes are
+   identical to what is already published (a metadata-only upstream rebuild), clean/ and raw/ are not rewritten.
+3. Publish. Only if every file in the dataset passed are its staged files moved into clean/ (and raw/ for
+   `history: all`).
 
-A failed fetch or build raises UpdateFailed, is recorded in runs.jsonl, and leaves raw/, clean/ and rejects/
-untouched. Publish goes file by file: raw snapshot (if `history: all`), rejects, then clean. A failure there
-can leave some files published; the next run finishes the rest. A dry run and a held lock record nothing.
+A failed dataset leaves its raw/, clean/ and rejects/ untouched; other datasets in the same run still publish,
+and the run ends with UpdateFailed (recorded as failed in runs.jsonl). A dry run and a held lock record nothing.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ _RAW_METADATA_FIELDS = ("raw_sha256", "raw_size", "raw_path", "upstream_updated_
 
 
 class UpdateFailed(Exception):
-    """`published_file_count` is how many clean files were replaced before the failure (0 unless publishing started)."""
+    """`published_file_count` is how many clean files were replaced during the run (0 if none published)."""
 
     def __init__(self, errors: list[str], published_file_count: int = 0):
         super().__init__("; ".join(errors))
@@ -72,13 +74,13 @@ class FetchedRawFile:
 
 @dataclass(frozen=True)
 class StagedCleanFile:
-    """A clean file built in the staging folder, waiting to be published."""
+    """One built target ready to publish. `staged_clean_path` is None when only upstream metadata changed."""
 
     target: IngestTarget
-    staged_clean_path: Path
+    staged_clean_path: Path | None
     staged_rejects_path: Path | None
-    staged_raw_path: Path | None  # set only for freshly fetched `history: all` datasets
-    clean_state_entry: dict  # its clean_state.json record, without built_at and run_id
+    staged_raw_path: Path | None  # set only for freshly fetched `history: all` datasets with changed data
+    clean_state_entry: dict
     notes: list[str]
 
 
@@ -152,6 +154,7 @@ def plan_ingest_targets(
         missing_upstream_filenames = [name for name in published_filenames if name not in release_assets]
         if missing_upstream_filenames:
             errors.append(f"{dataset.name}: upstream no longer lists {_format_name_sample(missing_upstream_filenames)}")
+            continue
         deselected_published_filenames = [
             name for name in published_filenames if name in release_assets and name not in selected_filenames
         ]
@@ -161,6 +164,7 @@ def plan_ingest_targets(
                 "no longer selects it (min_season or file changed); restore the catalog entry, or delete the file "
                 "from clean/ and rejects/ and its entry from manifest/clean_state.json"
             )
+            continue
         for asset, season in sorted(matched_assets, key=lambda pair: pair[0].filename):
             if season_filter and season is not None and season not in season_filter:
                 continue
@@ -187,7 +191,7 @@ def _needs_rebuild(target: IngestTarget, clean_state: dict[str, dict], lake: Lak
     published = clean_state.get(target.file_id)
     if published is None or not lake.clean_file_path(target.dataset.name, target.asset.filename).exists():
         return True
-    if _upstream_changed(target, published) or published["contract"] != target.dataset.contract_fingerprint:
+    if _upstream_changed(target, published) or published["contract"] != target.dataset.contract:
         return True
     return target.dataset.history == "all" and not _has_stored_raw(published, lake)
 
@@ -207,12 +211,10 @@ def _fetch_one_target(
 ) -> FetchedRawFile:
     """Runs in a worker thread. Shared parent folders already exist; see _fetch_targets."""
     staged_raw_path = staging_dir / "raw" / target.dataset.name / target.asset.filename
-    source.fetch(target.asset, staged_raw_path)
-    downloaded_bytes = staged_raw_path.stat().st_size
-    if downloaded_bytes != target.asset.size_bytes:
-        raise ListingMismatch(f"downloaded {downloaded_bytes} bytes but upstream lists {target.asset.size_bytes}")
-    actual_sha256 = compute_file_sha256(staged_raw_path)
-    if target.asset.sha256 and actual_sha256 != target.asset.sha256:
+    downloaded = source.fetch(target.asset, staged_raw_path)
+    if downloaded.size_bytes != target.asset.size_bytes:
+        raise ListingMismatch(f"downloaded {downloaded.size_bytes} bytes but upstream lists {target.asset.size_bytes}")
+    if target.asset.sha256 and downloaded.sha256 != target.asset.sha256:
         raise ListingMismatch("checksum differs from the one upstream publishes")
     try:
         parquet_kv_metadata = pl.read_parquet_metadata(staged_raw_path)
@@ -220,7 +222,7 @@ def _fetch_one_target(
         raise SourceError(f"not a readable Parquet file ({error})") from error
     raw_path_rel = (
         lake.relative_posix_path(
-            lake.raw_file_path(target.dataset.name, target.asset.filename, target.asset.updated_at, actual_sha256)
+            lake.raw_file_path(target.dataset.name, target.asset.filename, target.asset.updated_at, downloaded.sha256)
         )
         if target.dataset.history == "all"
         else None
@@ -228,8 +230,8 @@ def _fetch_one_target(
     return FetchedRawFile(
         staged_path=staged_raw_path,
         raw_metadata={
-            "raw_sha256": actual_sha256,
-            "raw_size": downloaded_bytes,
+            "raw_sha256": downloaded.sha256,
+            "raw_size": downloaded.size_bytes,
             "raw_path": raw_path_rel,
             "upstream_updated_at": target.asset.updated_at,
             "upstream_built_at": parquet_kv_metadata.get("nflverse_timestamp"),
@@ -286,7 +288,7 @@ def _fetch_with_rechecks(
     summary: UpdateSummary,
     workers: int,
 ) -> tuple[list[IngestTarget], dict[str, FetchedRawFile]]:
-    """Phase 1: download changed files, re-listing upstream if a file was replaced mid-run."""
+    """Phase 1: download changed files, re-listing affected release tag(s) if a file was replaced mid-run."""
     megabytes = sum(target.asset.size_bytes for target in targets_to_fetch) / 1e6
     logger.info("fetching %d file(s) (%.1f MB)", len(targets_to_fetch), megabytes)
     fetched_by_file_id: dict[str, FetchedRawFile] = {}
@@ -296,8 +298,8 @@ def _fetch_with_rechecks(
     refreshed_by_file_id: dict[str, IngestTarget] = {}
 
     # A download that does not match the listing usually means upstream replaced the file after the listing was
-    # made. List again and fetch what the new listing describes. Where the listing has not changed, give it time
-    # to catch up before calling the download bad.
+    # made. Re-list only the affected release tag(s) and fetch what the new listing describes. Where the listing
+    # has not changed, give it time to catch up before calling the download bad.
     for recheck in range(LISTING_RECHECKS):
         if errors or not mismatched:
             break
@@ -306,11 +308,14 @@ def _fetch_with_rechecks(
                 "waiting %.0fs for listing to catch up (%d file(s))", source.listing_lag_seconds, len(mismatched)
             )
             time.sleep(source.listing_lag_seconds)
-        fresh_listing = source.list_assets()
+        fresh_by_tag = {
+            release_tag: source.list_release_assets(release_tag)
+            for release_tag in {target.asset.release_tag for target, _ in mismatched}
+        }
         relisted: list[IngestTarget] = []
         unchanged: list[tuple[IngestTarget, str]] = []
         for target, mismatch in mismatched:
-            fresh_asset = fresh_listing.get(target.asset.release_tag, {}).get(target.asset.filename)
+            fresh_asset = fresh_by_tag[target.asset.release_tag].get(target.asset.filename)
             if fresh_asset is not None and fresh_asset != target.asset:
                 updated_target = dataclasses.replace(target, asset=fresh_asset)
                 relisted.append(updated_target)
@@ -326,7 +331,6 @@ def _fetch_with_rechecks(
             break
 
     errors += [f"{target.file_id}: {mismatch}" for target, mismatch in mismatched]
-    summary.fetched_file_ids.sort()
     if errors:
         raise UpdateFailed(sorted(errors))
     return [refreshed_by_file_id.get(target.file_id, target) for target in targets], fetched_by_file_id
@@ -361,10 +365,15 @@ def _build_one_target(
             advice = f"raw file {source_raw_path} cannot be read; delete it and run update to fetch it again"
         raise ContractError(f"{advice} ({type(error).__name__})") from error
 
+    # Drop temporary raw downloads for `history: latest` as soon as they are in memory to halve peak staging disk.
+    if fetched is not None and target.dataset.history != "all":
+        fetched.staged_path.unlink(missing_ok=True)
+
     build_result = build_clean(raw_frame, target.dataset, previous_clean_state, accept_schema_change)
     staged_clean_path = staging_dir / "clean" / target.dataset.name / target.asset.filename
     staged_clean_path.parent.mkdir(parents=True, exist_ok=True)
     build_result.clean_frame.write_parquet(staged_clean_path, compression="zstd")
+    clean_sha256 = compute_file_sha256(staged_clean_path)
 
     staged_rejects_path = None
     if build_result.rejected_frame is not None:
@@ -372,19 +381,56 @@ def _build_one_target(
         staged_rejects_path.parent.mkdir(parents=True, exist_ok=True)
         build_result.rejected_frame.write_parquet(staged_rejects_path, compression="zstd")
 
+    # If upstream republished identical rows (for example, a new Parquet timestamp only), refresh upstream metadata
+    # in clean_state.json without rewriting clean/ or storing a duplicate raw snapshot.
+    clean_path = lake.clean_file_path(target.dataset.name, target.asset.filename)
+    rejects_path = lake.rejects_file_path(target.dataset.name, target.asset.filename)
+    rejects_unchanged = (
+        previous_clean_state is not None
+        and build_result.rejected_row_count == previous_clean_state["rejected_rows"]
+        and (
+            not rejects_path.exists()
+            if staged_rejects_path is None
+            else rejects_path.exists() and staged_rejects_path.read_bytes() == rejects_path.read_bytes()
+        )
+    )
+    data_unchanged = (
+        previous_clean_state is not None
+        and clean_path.exists()
+        and previous_clean_state["contract"] == target.dataset.contract
+        and clean_sha256 == previous_clean_state["clean_sha256"]
+        and rejects_unchanged
+        and (target.dataset.history != "all" or _has_stored_raw(previous_clean_state, lake))
+    )
+    if data_unchanged:
+        assert previous_clean_state is not None
+        staged_clean_path.unlink(missing_ok=True)
+        if staged_rejects_path is not None:
+            staged_rejects_path.unlink(missing_ok=True)
+        if staged_raw_path is not None:
+            staged_raw_path.unlink(missing_ok=True)
+        refreshed_entry = {
+            **previous_clean_state,
+            "raw_sha256": raw_metadata["raw_sha256"],
+            "raw_size": raw_metadata["raw_size"],
+            "upstream_updated_at": raw_metadata["upstream_updated_at"],
+            "upstream_built_at": raw_metadata["upstream_built_at"],
+        }
+        return StagedCleanFile(target, None, None, None, refreshed_entry, [])
+
     # Only the facts are kept; holding every frame until publish would not fit in memory on a first run.
     clean_state_entry = {
         **raw_metadata,
         "dataset": target.dataset.name,
         "asset": target.asset.filename,
         "season": target.season,
-        "clean_sha256": compute_file_sha256(staged_clean_path),
+        "clean_sha256": clean_sha256,
         "rows": build_result.clean_frame.height,
         "rows_in": build_result.input_row_count,
         "rejected_rows": build_result.rejected_row_count,
         "deduped_rows": build_result.deduped_row_count,
         "columns": build_result.column_schema,
-        "contract": target.dataset.contract_fingerprint,
+        "contract": target.dataset.contract,
     }
     return StagedCleanFile(
         target, staged_clean_path, staged_rejects_path, staged_raw_path, clean_state_entry, build_result.notes
@@ -411,7 +457,10 @@ def _build_staged_files(
                 lake, target, fetched, clean_state.get(target.file_id), staging_dir, accept_schema_change
             )
             staged_files.append(staged_file)
-            logger.info("built %s (%d rows)", target.file_id, staged_file.clean_state_entry["rows"])
+            if staged_file.staged_clean_path is None:
+                logger.info("unchanged data %s (upstream metadata refreshed)", target.file_id)
+            else:
+                logger.info("built %s (%d rows)", target.file_id, staged_file.clean_state_entry["rows"])
         except ContractError as error:
             errors.append(f"{target.file_id}: {error}")
             logger.error("contract failed for %s: %s", target.file_id, error)
@@ -428,9 +477,14 @@ def _publish_staged_files(
     published_at: str,
 ) -> None:
     """Phase 3: move staged files into raw/ (for `history: all`), rejects/, and clean/."""
+    state_updated = False
     try:
         for staged_file in staged_files:
             target = staged_file.target
+            if staged_file.staged_clean_path is None:
+                clean_state[target.file_id] = staged_file.clean_state_entry
+                state_updated = True
+                continue
             if staged_file.staged_raw_path is not None:
                 final_raw_path = lake.root_dir / staged_file.clean_state_entry["raw_path"]
                 final_raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -450,6 +504,7 @@ def _publish_staged_files(
                 "built_at": published_at,
                 "run_id": summary.run_id,
             }
+            state_updated = True
             summary.rebuilt_file_ids.append(target.file_id)
             if staged_file.clean_state_entry["rejected_rows"]:
                 summary.rejected_rows_by_file[target.file_id] = staged_file.clean_state_entry["rejected_rows"]
@@ -457,7 +512,7 @@ def _publish_staged_files(
                 summary.deduped_rows_by_file[target.file_id] = staged_file.clean_state_entry["deduped_rows"]
             summary.notes += [f"{target.file_id}: {note}" for note in staged_file.notes]
     finally:
-        if summary.rebuilt_file_ids:  # also after a failure part-way, so clean/ and its record agree
+        if state_updated:  # also after a failure part-way, so clean/ and its record agree
             lake.save_clean_state(clean_state)
 
 
@@ -474,14 +529,14 @@ def _execute_update(
 ) -> None:
     listing = source.list_assets()
     clean_state = lake.load_clean_state()
-    targets, errors = plan_ingest_targets(catalog, listing, clean_state, dataset_names, season_filter)
-    if errors:
-        raise UpdateFailed(errors)
+    targets, plan_errors = plan_ingest_targets(catalog, listing, clean_state, dataset_names, season_filter)
     summary.target_file_count = len(targets)
     summary.dataset_count = len({target.dataset.name for target in targets})
-    targets_to_fetch = [target for target in targets if _needs_fetch(target, clean_state, lake)]
 
     if summary.dry_run:
+        if plan_errors:
+            raise UpdateFailed(plan_errors)
+        targets_to_fetch = [target for target in targets if _needs_fetch(target, clean_state, lake)]
         summary.fetched_file_ids = sorted(target.file_id for target in targets_to_fetch)
         summary.rebuilt_file_ids = sorted(
             target.file_id for target in targets if _needs_rebuild(target, clean_state, lake)
@@ -490,14 +545,35 @@ def _execute_update(
         summary.unchanged_file_count = len(targets) - len(summary.rebuilt_file_ids)
         return
 
-    targets, fetched_by_file_id = _fetch_with_rechecks(
-        source, lake, targets, targets_to_fetch, staging_dir, summary, workers
-    )
-    staged_files = _build_staged_files(
-        lake, targets, fetched_by_file_id, clean_state, staging_dir, accept_schema_change
-    )
-    _publish_staged_files(lake, staged_files, clean_state, summary, format_utc_iso(utc_now()))
+    targets_by_dataset: dict[str, list[IngestTarget]] = {}
+    for target in targets:
+        targets_by_dataset.setdefault(target.dataset.name, []).append(target)
+
+    all_errors = list(plan_errors)
+    for dataset_name, dataset_targets in targets_by_dataset.items():
+        dataset_to_fetch = [target for target in dataset_targets if _needs_fetch(target, clean_state, lake)]
+        dataset_staging = staging_dir / dataset_name
+        try:
+            if dataset_to_fetch:
+                dataset_targets, fetched_by_file_id = _fetch_with_rechecks(
+                    source, lake, dataset_targets, dataset_to_fetch, dataset_staging, summary, workers
+                )
+            else:
+                fetched_by_file_id = {}
+            staged_files = _build_staged_files(
+                lake, dataset_targets, fetched_by_file_id, clean_state, dataset_staging, accept_schema_change
+            )
+            if staged_files:
+                _publish_staged_files(lake, staged_files, clean_state, summary, format_utc_iso(utc_now()))
+        except UpdateFailed as dataset_failure:
+            all_errors.extend(dataset_failure.errors)
+        finally:
+            shutil.rmtree(dataset_staging, ignore_errors=True)
+
+    summary.fetched_file_ids.sort()
     summary.unchanged_file_count = len(targets) - len(summary.rebuilt_file_ids)
+    if all_errors:
+        raise UpdateFailed(all_errors, published_file_count=len(summary.rebuilt_file_ids))
 
 
 def run_update(
@@ -509,7 +585,7 @@ def run_update(
     season_filter: set[int] | None = None,
     accept_schema_change: bool = False,
     dry_run: bool = False,
-    workers: int = 4,
+    workers: int = 8,
 ) -> UpdateSummary:
     started_at = utc_now()
     summary = UpdateSummary(run_id=f"run_{started_at:%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:4]}", dry_run=dry_run)
@@ -553,6 +629,8 @@ def run_update(
             raise
         except SourceError as error:  # upstream could not be listed
             record_run("failed", [str(error)])
+            if summary.rebuilt_file_ids:
+                raise UpdateFailed([str(error)], published_file_count=len(summary.rebuilt_file_ids)) from error
             raise
         except Exception as error:
             errors = [f"{type(error).__name__}: {error}"]
@@ -593,7 +671,7 @@ def verify_lake(
         clean_path = lake.clean_file_path(dataset.name, published_entry["asset"])
         if not clean_path.exists():
             errors.append(f"{file_id}: clean file is missing")
-        elif published_entry["contract"] != dataset.contract_fingerprint:
+        elif published_entry["contract"] != dataset.contract:
             errors.append(f"{file_id}: built under an older contract; run update to rebuild it")
         else:
             try:
