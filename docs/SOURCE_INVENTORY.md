@@ -116,8 +116,8 @@ All URLs have the form `https://github.com/nflverse/nflverse-data/releases/downl
 
 - **Grain:** one row per player per week, in three files for passing, rushing and receiving. All seasons are in each file.
 - **Key:** `season, season_type, week, player_gsis_id`, unique.
-- **Rows to drop:** `week = 0` rows are season totals (444, 554 and 1,362 rows).
-- **Quirks:** team column is `team_abbr`. The files hold far fewer players than player stats do (704 distinct receivers across all seasons), so treat a missing row as "not published", not as zero.
+- **Rows to drop:** `week = 0` rows are season totals (444, 558 and 1,369 rows).
+- **Quirks:** team column is `team_abbr` and uses `LAR` instead of `LA`. Because Next Gen Stats counts the Pro Bowl bye week, Super Bowl rows are numbered one week higher than `schedules` and `stats_player_week` (`week = 22` in 2016–2020 and `week = 23` in 2021+); subtract 1 for Super Bowl rows before joining. The files hold far fewer players than player stats do (704 distinct receivers across all seasons), so treat a missing row as "not published", not as zero.
 
 ### Participation and FTN charting
 
@@ -195,6 +195,6 @@ Week-based depth charts and weekly rosters before 2016 need a deduplication rule
 
 ## Open questions
 
-- Whether `fantasy_points_ppr` in player stats matches the scoring in `catalog/draftkings.yml`.
+- Exact DraftKings rules for 2026: `docs/DATA_VERIFICATION.md` proved that `stats_player_week.fantasy_points_ppr` does **not** match DraftKings scoring (exact differences: missing `+3` yardage bonuses, `-2` vs `-1` on INTs and fumbles lost, return fumbles excluded from component fumbles, and offensive fumble-recovery TDs excluded). Before Stage 6, re-verify `catalog/draftkings.yml` against the 2026 DraftKings rules page — specifically whether PATs after opponent pick-sixes count against DST points allowed and whether return fumbles lost score `-1` for offensive players.
 - What update schedule to rely on. On 21 Nov 2026 files were updated between 14:00 and 17:00 UTC and again after 22:00 UTC. The schedule nflverse states was not checked.
-- How far back the training window should go. Five sources start between 2013 and 2022 (see the table), and three 1999–2000 games have no plays.
+- How far back the training window should go. Five sources start between 2013 and 2022 (see the table), and `docs/DATA_VERIFICATION.md` shows `2016–2026` is 100% clean across every cross-source checkbook identity while `1999–2015` has upstream gaps (missing `1999` gametimes, three `1999–2000` play-less games, missing `2001–2002` JAX team rows, and `2002–2008` missing targets).
