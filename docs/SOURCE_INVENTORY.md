@@ -191,7 +191,7 @@ Built into `data/core/` by `python -m nfl_lake build-core`, gated by Strategy 1 
 | `player.parquet` | `gsis_id` | Players with normalized `latest_team`/`draft_team`, enriched with latest `sleeper_id` and `yahoo_id` from `weekly_rosters` |
 | `player_game.parquet` | `game_id, player_id` | Every player with a stat line or a snap in the game: player stats, plus snaps through `pfr_id`, plus Next Gen Stats (with Super Bowl week `22→21` / `23→22` alignment), plus PFR advanced stats where present. A player with snaps and no stat line (2013 on) has `has_stat_line` false and the values of an empty stat line |
 | `play/play_<season>.parquet` | `game_id, play_id` | Play-by-play partitioned per season with normalized teams, plus participation (`2016+`), plus FTN charting (`2022+`) |
-| `player_week_status.parquet` | `season, week, team, gsis_id` | `FULL OUTER JOIN` of `weekly_rosters` (`2016+`) and `injuries` (`2016+`) so injury-only rows are preserved |
+| `player_week_status.parquet` | `season, week, team, gsis_id` | `FULL OUTER JOIN` of `weekly_rosters` (`2016+`) and `injuries` (`2016+`) so injury-only rows are preserved. `injury_report_modified_utc` is the injuries `date_modified`, which upstream publishes through 2024 only |
 | `depth_chart_snapshot.parquet` | `dt, team, pos_id, pos_rank` | Snapshot depth charts (`2025+`), parsed `snapshot_utc`, and missing `gsis_id` values rescued via `players.espn_id` |
 
 Week-based depth charts and weekly rosters before 2016 need a deduplication rule before they can be loaded. Decide whether they are worth it once the first features exist.

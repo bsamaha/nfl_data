@@ -236,6 +236,7 @@ def _populate_valid_clean_lake(lake: LakeStore) -> None:
                 "practice_primary_injury": ["Ankle", "Knee"],
                 "practice_secondary_injury": [None, None],
                 "practice_status": ["Limited Participation in Practice", "Did Not Participate In Practice"],
+                "date_modified": [datetime(2025, 9, 5, 20, 0, tzinfo=UTC), datetime(2025, 9, 5, 21, 30, tzinfo=UTC)],
             }
         ),
     )
@@ -543,6 +544,7 @@ def test_build_core_publishes_all_seven_tables_and_normalizes_sources(lake: Lake
     assert injury_only.height == 1
     assert injury_only["report_status"].item() == "Out"
     assert injury_only["roster_status"].item() is None
+    assert injury_only["injury_report_modified_utc"].item() == datetime(2025, 9, 5, 21, 30, tzinfo=UTC)
 
     # depth_chart_snapshot: null/empty gsis_id rescued via players.espn_id
     depth_frame = pl.read_parquet(lake.core_dir / "depth_chart_snapshot.parquet")

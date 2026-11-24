@@ -52,6 +52,15 @@ CURRENT_TEAM_CODES = (
 )
 _TEAM_SQL_LIST = ", ".join(f"'{code}'" for code in CURRENT_TEAM_CODES)
 _HISTORICAL_PLAYLESS_GAMES = "'1999_01_BAL_STL', '2000_03_SD_KC', '2000_06_BUF_MIA'"
+# The first season in which every cross-source identity holds with no exception; section 6 of
+# docs/DATA_VERIFICATION.md gives the measurements.
+STRICT_MIN_SEASON = 2016
+# Next Gen Stats counts the Pro Bowl week, so it numbers the Super Bowl one week later than the schedule does.
+NGS_WEEK_AS_SCHEDULE_WEEK = (
+    "CASE WHEN season_type = 'POST' AND ((season <= 2020 AND week = 22) OR (season >= 2021 AND week = 23)) "
+    "THEN week - 1 ELSE week END"
+)
+_SAMPLE_ROW_LIMIT = 5  # failing rows kept from each check to show what failed
 
 
 @dataclass(frozen=True)
@@ -99,17 +108,12 @@ class CheckReport:
         return not self.errors
 
 
-def _sql_path(path: Path) -> str:
+def sql_path(path: Path) -> str:
     return path.as_posix().replace("'", "''")
 
 
-def run_checks(
-    connection: duckdb.DuckDBPyConnection,
-    checks: Sequence[DataCheck],
-    *,
-    sample_limit: int = 5,
-) -> CheckReport:
-    """Execute every check query and capture failing row counts plus up to `sample_limit` sample rows.
+def run_checks(connection: duckdb.DuckDBPyConnection, checks: Sequence[DataCheck]) -> CheckReport:
+    """Execute every check query and capture failing row counts plus a few sample rows.
 
     A query that cannot be run (a file it reads is unreadable or has lost a column) is recorded on its outcome and
     the remaining checks still run.
@@ -130,7 +134,7 @@ def run_checks(
                 description=check.description,
                 failure_count=len(failing_rows),
                 columns=columns,
-                sample_rows=failing_rows[:sample_limit],
+                sample_rows=failing_rows[:_SAMPLE_ROW_LIMIT],
                 query_error=query_error,
             )
         )
@@ -150,17 +154,17 @@ def format_check_outcome(outcome: CheckOutcome) -> str:
 
 def build_clean_health_checks(clean_dir: Path) -> list[DataCheck]:
     """Stage 3 cross-dataset health checks across `data/clean/`."""
-    sched = _sql_path(clean_dir / "schedules" / "games.parquet")
-    pbp = _sql_path(clean_dir / "pbp" / "*.parquet")
-    player_stats = _sql_path(clean_dir / "stats_player_week" / "*.parquet")
-    team_stats = _sql_path(clean_dir / "stats_team_week" / "*.parquet")
-    snaps = _sql_path(clean_dir / "snap_counts" / "*.parquet")
-    participation = _sql_path(clean_dir / "pbp_participation" / "*.parquet")
-    ftn = _sql_path(clean_dir / "ftn_charting" / "*.parquet")
-    pfr_pass = _sql_path(clean_dir / "pfr_week_pass" / "*.parquet")
-    pfr_rush = _sql_path(clean_dir / "pfr_week_rush" / "*.parquet")
-    pfr_rec = _sql_path(clean_dir / "pfr_week_rec" / "*.parquet")
-    pfr_def = _sql_path(clean_dir / "pfr_week_def" / "*.parquet")
+    sched = sql_path(clean_dir / "schedules" / "games.parquet")
+    pbp = sql_path(clean_dir / "pbp" / "*.parquet")
+    player_stats = sql_path(clean_dir / "stats_player_week" / "*.parquet")
+    team_stats = sql_path(clean_dir / "stats_team_week" / "*.parquet")
+    snaps = sql_path(clean_dir / "snap_counts" / "*.parquet")
+    participation = sql_path(clean_dir / "pbp_participation" / "*.parquet")
+    ftn = sql_path(clean_dir / "ftn_charting" / "*.parquet")
+    pfr_pass = sql_path(clean_dir / "pfr_week_pass" / "*.parquet")
+    pfr_rush = sql_path(clean_dir / "pfr_week_rush" / "*.parquet")
+    pfr_rec = sql_path(clean_dir / "pfr_week_rec" / "*.parquet")
+    pfr_def = sql_path(clean_dir / "pfr_week_def" / "*.parquet")
 
     checks = [
         DataCheck(
@@ -314,25 +318,25 @@ def build_clean_health_checks(clean_dir: Path) -> list[DataCheck]:
     return checks
 
 
-def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int = 2016) -> list[DataCheck]:
+def build_core_checks(core_dir: Path, clean_dir: Path) -> list[DataCheck]:
     """Stage 4 publish-time Strategy 1 checkbook rules against staged or published `core/` tables."""
-    game = _sql_path(core_dir / "game.parquet")
-    team_game = _sql_path(core_dir / "team_game.parquet")
-    player = _sql_path(core_dir / "player.parquet")
-    player_game = _sql_path(core_dir / "player_game.parquet")
-    play = _sql_path(core_dir / "play" / "*.parquet")
-    status = _sql_path(core_dir / "player_week_status.parquet")
-    depth = _sql_path(core_dir / "depth_chart_snapshot.parquet")
+    game = sql_path(core_dir / "game.parquet")
+    team_game = sql_path(core_dir / "team_game.parquet")
+    player = sql_path(core_dir / "player.parquet")
+    player_game = sql_path(core_dir / "player_game.parquet")
+    play = sql_path(core_dir / "play" / "*.parquet")
+    status = sql_path(core_dir / "player_week_status.parquet")
+    depth = sql_path(core_dir / "depth_chart_snapshot.parquet")
 
-    clean_schedules = _sql_path(clean_dir / "schedules" / "games.parquet")
-    clean_players = _sql_path(clean_dir / "players" / "players.parquet")
-    clean_depth = _sql_path(clean_dir / "depth_charts" / "*.parquet")
-    clean_pbp = _sql_path(clean_dir / "pbp" / "*.parquet")
-    clean_player_stats = _sql_path(clean_dir / "stats_player_week" / "*.parquet")
-    clean_snaps = _sql_path(clean_dir / "snap_counts" / "*.parquet")
-    clean_ngs_pass = _sql_path(clean_dir / "ngs_passing" / "ngs_passing.parquet")
-    clean_ngs_rush = _sql_path(clean_dir / "ngs_rushing" / "ngs_rushing.parquet")
-    clean_ngs_rec = _sql_path(clean_dir / "ngs_receiving" / "ngs_receiving.parquet")
+    clean_schedules = sql_path(clean_dir / "schedules" / "games.parquet")
+    clean_players = sql_path(clean_dir / "players" / "players.parquet")
+    clean_depth = sql_path(clean_dir / "depth_charts" / "*.parquet")
+    clean_pbp = sql_path(clean_dir / "pbp" / "*.parquet")
+    clean_player_stats = sql_path(clean_dir / "stats_player_week" / "*.parquet")
+    clean_snaps = sql_path(clean_dir / "snap_counts" / "*.parquet")
+    clean_ngs_pass = sql_path(clean_dir / "ngs_passing" / "ngs_passing.parquet")
+    clean_ngs_rush = sql_path(clean_dir / "ngs_rushing" / "ngs_rushing.parquet")
+    clean_ngs_rec = sql_path(clean_dir / "ngs_receiving" / "ngs_receiving.parquet")
 
     checks = [
         # 1. Table shape & join safety ---------------------------------------------------------------
@@ -421,8 +425,8 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                            (SELECT count(*) FROM read_parquet('{clean_depth}'))
                     UNION ALL
                     SELECT 'team_game_strict_era',
-                           (SELECT count(*) FROM read_parquet('{team_game}') WHERE season >= {strict_min_season}),
-                           2 * (SELECT count(*) FROM read_parquet('{game}') WHERE season >= {strict_min_season} AND home_score IS NOT NULL)
+                           (SELECT count(*) FROM read_parquet('{team_game}') WHERE season >= {STRICT_MIN_SEASON}),
+                           2 * (SELECT count(*) FROM read_parquet('{game}') WHERE season >= {STRICT_MIN_SEASON} AND home_score IS NOT NULL)
                 )
                 SELECT table_name, core_rows, source_rows FROM row_counts WHERE core_rows != source_rows
             """,
@@ -430,9 +434,9 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
         DataCheck(
             name="core_team_game_symmetry",
             severity="error",
-            description=f"Every played game ({strict_min_season}+) has 1 home and 1 away team_game row with matching reciprocal opponents",
+            description=f"Every played game ({STRICT_MIN_SEASON}+) has 1 home and 1 away team_game row with matching reciprocal opponents",
             query=f"""
-                WITH tg AS (SELECT game_id, team, opponent, is_home FROM read_parquet('{team_game}') WHERE season >= {strict_min_season})
+                WITH tg AS (SELECT game_id, team, opponent, is_home FROM read_parquet('{team_game}') WHERE season >= {STRICT_MIN_SEASON})
                 SELECT game_id, count(*) AS rows_in_game,
                        count(*) FILTER (WHERE is_home) AS home_rows,
                        count(*) FILTER (WHERE NOT is_home) AS away_rows
@@ -464,7 +468,7 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
         DataCheck(
             name="core_foreign_keys_hold",
             severity="error",
-            description=f"Every game_id in team_game/player_game/play exists in game, and every {strict_min_season}+ player_game.player_id exists in player",
+            description=f"Every game_id in team_game/player_game/play exists in game, and every {STRICT_MIN_SEASON}+ player_game.player_id exists in player",
             query=f"""
                 SELECT 'team_game.game_id' AS fk, tg.game_id AS bad_key
                 FROM read_parquet('{team_game}') tg LEFT JOIN read_parquet('{game}') g USING (game_id)
@@ -480,20 +484,20 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                 UNION ALL
                 SELECT 'player_game.player_id', pg.player_id
                 FROM read_parquet('{player_game}') pg LEFT JOIN read_parquet('{player}') p ON pg.player_id = p.gsis_id
-                WHERE pg.season >= {strict_min_season} AND p.gsis_id IS NULL
+                WHERE pg.season >= {STRICT_MIN_SEASON} AND p.gsis_id IS NULL
             """,
         ),
         DataCheck(
             name="core_snap_join_coverage",
             severity="error",
-            description=f"At least 99.5% of {strict_min_season}+ skill-position snap_counts rows resolve to player.gsis_id via pfr_id",
+            description=f"At least 99.5% of {STRICT_MIN_SEASON}+ skill-position snap_counts rows resolve to player.gsis_id via pfr_id",
             query=f"""
                 WITH stats AS (
                     SELECT count(*) AS total_rows,
                            count(*) FILTER (WHERE p.gsis_id IS NOT NULL) AS matched_rows
                     FROM read_parquet('{clean_snaps}') sn
                     LEFT JOIN read_parquet('{player}') p ON NULLIF(sn.pfr_player_id, '') = NULLIF(p.pfr_id, '')
-                    WHERE sn.season >= {strict_min_season} AND sn.position IN ('QB', 'RB', 'WR', 'TE')
+                    WHERE sn.season >= {STRICT_MIN_SEASON} AND sn.position IN ('QB', 'RB', 'WR', 'TE')
                 )
                 SELECT total_rows, matched_rows, round(100.0 * matched_rows / NULLIF(total_rows, 0), 3) AS match_pct
                 FROM stats
@@ -554,7 +558,7 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
         DataCheck(
             name="core_player_sums_equal_team",
             severity="error",
-            description=f"For {strict_min_season}+, sum(player_game) matches team_game across all 12 core offensive stat columns",
+            description=f"For {STRICT_MIN_SEASON}+, sum(player_game) matches team_game across all 12 core offensive stat columns",
             query=f"""
                 WITH p AS (
                     SELECT game_id, team,
@@ -571,7 +575,7 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                            sum(coalesce(receiving_yards, 0)) AS receiving_yards,
                            sum(coalesce(receiving_tds, 0)) AS receiving_tds
                     FROM read_parquet('{player_game}')
-                    WHERE season >= {strict_min_season}
+                    WHERE season >= {STRICT_MIN_SEASON}
                     GROUP BY game_id, team
                 )
                 SELECT t.game_id, t.team,
@@ -580,7 +584,7 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                        p.receiving_yards - t.receiving_yards AS rec_yd_diff
                 FROM read_parquet('{team_game}') t
                 LEFT JOIN p USING (game_id, team)
-                WHERE t.season >= {strict_min_season}
+                WHERE t.season >= {STRICT_MIN_SEASON}
                   AND (
                       coalesce(p.completions, 0) != coalesce(t.completions, 0)
                       OR coalesce(p.attempts, 0) != coalesce(t.attempts, 0)
@@ -600,7 +604,7 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
         DataCheck(
             name="core_team_points_equal_schedule",
             severity="error",
-            description=f"For {strict_min_season}+, team_game scoring plays add up to game.home_score / away_score",
+            description=f"For {STRICT_MIN_SEASON}+, team_game scoring plays add up to game.home_score / away_score",
             query=f"""
                 WITH calc AS (
                     SELECT game_id, team, points_scored,
@@ -611,7 +615,7 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                            + 2 * (coalesce(rushing_2pt_conversions, 0) + coalesce(receiving_2pt_conversions, 0)
                                   + coalesce(def_2pt_made, 0) + coalesce(def_safeties, 0)) AS derived_points
                     FROM read_parquet('{team_game}')
-                    WHERE season >= {strict_min_season}
+                    WHERE season >= {STRICT_MIN_SEASON}
                 )
                 SELECT game_id, team, points_scored, derived_points
                 FROM calc
@@ -621,7 +625,7 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
         DataCheck(
             name="core_pbp_equals_team_boxscore",
             severity="error",
-            description=f"For {strict_min_season}+, play sums (including lateral_rushing_yards) equal team_game passing/rushing yards and TDs",
+            description=f"For {STRICT_MIN_SEASON}+, play sums (including lateral_rushing_yards) equal team_game passing/rushing yards and TDs",
             query=f"""
                 WITH p AS (
                     SELECT game_id, posteam AS team,
@@ -630,7 +634,7 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                            sum(coalesce(pass_touchdown, 0)) AS pass_tds,
                            sum(coalesce(rush_touchdown, 0)) AS rush_tds
                     FROM read_parquet('{play}')
-                    WHERE season >= {strict_min_season} AND posteam IS NOT NULL
+                    WHERE season >= {STRICT_MIN_SEASON} AND posteam IS NOT NULL
                     GROUP BY game_id, posteam
                 )
                 SELECT t.game_id, t.team,
@@ -640,7 +644,7 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                        t.rushing_tds - coalesce(p.rush_tds, 0) AS rush_td_diff
                 FROM read_parquet('{team_game}') t
                 LEFT JOIN p USING (game_id, team)
-                WHERE t.season >= {strict_min_season}
+                WHERE t.season >= {STRICT_MIN_SEASON}
                   AND (
                       t.passing_yards IS DISTINCT FROM coalesce(p.pass_yds, 0)
                       OR t.rushing_yards IS DISTINCT FROM coalesce(p.rush_yds, 0)
@@ -652,23 +656,23 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
         DataCheck(
             name="core_targets_vs_attempts_gap",
             severity="error",
-            description=f"For {strict_min_season}+, team_game.attempts - team_game.targets stays within [0, 15]",
+            description=f"For {STRICT_MIN_SEASON}+, team_game.attempts - team_game.targets stays within [0, 15]",
             query=f"""
                 SELECT game_id, team, attempts, targets, attempts - targets AS gap
                 FROM read_parquet('{team_game}')
-                WHERE season >= {strict_min_season}
+                WHERE season >= {STRICT_MIN_SEASON}
                   AND (attempts IS NULL OR targets IS NULL OR attempts - targets < 0 OR attempts - targets > 15)
             """,
         ),
         DataCheck(
             name="core_snap_11_player_physics",
             severity="error",
-            description=f"For {strict_min_season}+, sum(offense_snaps)/max(offense_snaps) per team-game stays within [10.0, 12.0]",
+            description=f"For {STRICT_MIN_SEASON}+, sum(offense_snaps)/max(offense_snaps) per team-game stays within [10.0, 12.0]",
             query=f"""
                 SELECT game_id, team,
                        round(sum(offense_snaps) / NULLIF(max(offense_snaps), 0), 3) AS snap_ratio
                 FROM read_parquet('{clean_snaps}')
-                WHERE season >= {strict_min_season}
+                WHERE season >= {STRICT_MIN_SEASON}
                 GROUP BY game_id, team
                 HAVING max(offense_snaps) > 0
                    AND (sum(offense_snaps) / max(offense_snaps) < 10.0 OR sum(offense_snaps) / max(offense_snaps) > 12.0)
@@ -677,11 +681,11 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
         DataCheck(
             name="core_snap_pct_11_player_warn",
             severity="warn",
-            description=f"For {strict_min_season}+, sum(offense_pct) per team-game outside [10.5, 11.5] (e.g. PFR denominator quirks)",
+            description=f"For {STRICT_MIN_SEASON}+, sum(offense_pct) per team-game outside [10.5, 11.5] (e.g. PFR denominator quirks)",
             query=f"""
                 SELECT game_id, team, round(sum(coalesce(offense_pct, 0)), 3) AS offense_pct_sum
                 FROM read_parquet('{clean_snaps}')
-                WHERE season >= {strict_min_season}
+                WHERE season >= {STRICT_MIN_SEASON}
                 GROUP BY game_id, team
                 HAVING sum(coalesce(offense_pct, 0)) < 10.5 OR sum(coalesce(offense_pct, 0)) > 11.5
             """,
@@ -690,12 +694,12 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
         DataCheck(
             name="core_stat_ranges_valid",
             severity="error",
-            description=f"For {strict_min_season}+, completions <= attempts, receptions <= targets, and key stats are non-null and within realistic NFL bounds",
+            description=f"For {STRICT_MIN_SEASON}+, completions <= attempts, receptions <= targets, and key stats are non-null and within realistic NFL bounds",
             query=f"""
                 SELECT game_id, player_id, completions, attempts, receptions, targets,
                        passing_yards, rushing_yards, receiving_yards, offense_pct
                 FROM read_parquet('{player_game}')
-                WHERE season >= {strict_min_season}
+                WHERE season >= {STRICT_MIN_SEASON}
                   AND (
                       completions IS NULL OR attempts IS NULL OR carries IS NULL OR receptions IS NULL OR targets IS NULL
                       OR passing_yards IS NULL OR rushing_yards IS NULL OR receiving_yards IS NULL
@@ -886,22 +890,14 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                 description="All weekly NGS rows (after SB week 22->21 / 23->22 mapping) join into player_game with 0 misses",
                 query=f"""
                     WITH ngs_all AS (
-                        SELECT 'passing' AS kind, season,
-                               CASE WHEN season_type = 'POST' AND ((season <= 2020 AND week = 22) OR (season >= 2021 AND week = 23))
-                                    THEN week - 1 ELSE week END AS week,
+                        SELECT 'passing' AS kind, season, {NGS_WEEK_AS_SCHEDULE_WEEK} AS week,
                                player_gsis_id AS player_id
                         FROM read_parquet('{clean_ngs_pass}') WHERE week > 0
                         UNION ALL
-                        SELECT 'rushing', season,
-                               CASE WHEN season_type = 'POST' AND ((season <= 2020 AND week = 22) OR (season >= 2021 AND week = 23))
-                                    THEN week - 1 ELSE week END,
-                               player_gsis_id
+                        SELECT 'rushing', season, {NGS_WEEK_AS_SCHEDULE_WEEK}, player_gsis_id
                         FROM read_parquet('{clean_ngs_rush}') WHERE week > 0
                         UNION ALL
-                        SELECT 'receiving', season,
-                               CASE WHEN season_type = 'POST' AND ((season <= 2020 AND week = 22) OR (season >= 2021 AND week = 23))
-                                    THEN week - 1 ELSE week END,
-                               player_gsis_id
+                        SELECT 'receiving', season, {NGS_WEEK_AS_SCHEDULE_WEEK}, player_gsis_id
                         FROM read_parquet('{clean_ngs_rec}') WHERE week > 0
                     )
                     SELECT ngs_all.kind, ngs_all.season, ngs_all.week, ngs_all.player_id

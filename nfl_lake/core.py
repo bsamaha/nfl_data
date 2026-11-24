@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -25,7 +26,15 @@ from pathlib import Path
 
 import duckdb
 
-from .checks import CheckReport, build_clean_health_checks, build_core_checks, format_check_outcome, run_checks
+from .checks import (
+    NGS_WEEK_AS_SCHEDULE_WEEK,
+    CheckReport,
+    build_clean_health_checks,
+    build_core_checks,
+    format_check_outcome,
+    run_checks,
+    sql_path,
+)
 from .source import compute_file_sha256
 from .store import CoreState, CoreTableRecord, LakeStore, format_utc_iso, utc_now
 
@@ -95,10 +104,6 @@ class CoreBuildSummary:
     report: CheckReport
 
 
-def _sql_path(path: Path) -> str:
-    return path.as_posix().replace("'", "''")
-
-
 def _norm_team(column_expr: str) -> str:
     """Normalize every historical/NGS NFL team code to the 32 current codes, turning blanks into NULL."""
     return (
@@ -119,8 +124,8 @@ def _open_utc_duckdb() -> duckdb.DuckDBPyConnection:
 
 def _copy_query_to_parquet(connection: duckdb.DuckDBPyConnection, query: str, dest_path: Path) -> int:
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    connection.execute(f"COPY ({query}) TO '{_sql_path(dest_path)}' (FORMAT PARQUET, COMPRESSION ZSTD)")
-    return int(connection.sql(f"SELECT count(*) FROM read_parquet('{_sql_path(dest_path)}')").fetchall()[0][0])
+    connection.execute(f"COPY ({query}) TO '{sql_path(dest_path)}' (FORMAT PARQUET, COMPRESSION ZSTD)")
+    return int(connection.sql(f"SELECT count(*) FROM read_parquet('{sql_path(dest_path)}')").fetchall()[0][0])
 
 
 def _require_clean_inputs(clean_dir: Path) -> None:
@@ -132,7 +137,7 @@ def _require_clean_inputs(clean_dir: Path) -> None:
 
 
 def _build_game_table(connection: duckdb.DuckDBPyConnection, clean_dir: Path, staged_core_dir: Path) -> int:
-    schedules = _sql_path(clean_dir / "schedules" / "games.parquet")
+    schedules = sql_path(clean_dir / "schedules" / "games.parquet")
     query = f"""
         SELECT
             game_id,
@@ -189,8 +194,8 @@ def _build_game_table(connection: duckdb.DuckDBPyConnection, clean_dir: Path, st
 
 
 def _build_team_game_table(connection: duckdb.DuckDBPyConnection, clean_dir: Path, staged_core_dir: Path) -> int:
-    team_stats = _sql_path(clean_dir / "stats_team_week" / "*.parquet")
-    game_path = _sql_path(staged_core_dir / "game.parquet")
+    team_stats = sql_path(clean_dir / "stats_team_week" / "*.parquet")
+    game_path = sql_path(staged_core_dir / "game.parquet")
     norm_team = _norm_team("t.team")
     norm_opp = _norm_team("t.opponent_team")
     query = f"""
@@ -225,8 +230,8 @@ def _build_team_game_table(connection: duckdb.DuckDBPyConnection, clean_dir: Pat
 
 
 def _build_player_table(connection: duckdb.DuckDBPyConnection, clean_dir: Path, staged_core_dir: Path) -> int:
-    players = _sql_path(clean_dir / "players" / "players.parquet")
-    rosters = _sql_path(clean_dir / "weekly_rosters" / "*.parquet")
+    players = sql_path(clean_dir / "players" / "players.parquet")
+    rosters = sql_path(clean_dir / "weekly_rosters" / "*.parquet")
     query = f"""
         WITH roster_ids AS (
             SELECT
@@ -280,27 +285,23 @@ def _build_player_game_table(connection: duckdb.DuckDBPyConnection, clean_dir: P
     thrown to is missing from it. snap_counts (2013 on) has that game, and a table without it would overstate
     every per-game average built from it.
     """
-    player_stats = _sql_path(clean_dir / "stats_player_week" / "*.parquet")
-    game_path = _sql_path(staged_core_dir / "game.parquet")
-    player_path = _sql_path(staged_core_dir / "player.parquet")
-    snaps = _sql_path(clean_dir / "snap_counts" / "*.parquet")
-    ngs_pass = _sql_path(clean_dir / "ngs_passing" / "ngs_passing.parquet")
-    ngs_rush = _sql_path(clean_dir / "ngs_rushing" / "ngs_rushing.parquet")
-    ngs_rec = _sql_path(clean_dir / "ngs_receiving" / "ngs_receiving.parquet")
-    pfr_pass = _sql_path(clean_dir / "pfr_week_pass" / "*.parquet")
-    pfr_rush = _sql_path(clean_dir / "pfr_week_rush" / "*.parquet")
-    pfr_rec = _sql_path(clean_dir / "pfr_week_rec" / "*.parquet")
-    pfr_def = _sql_path(clean_dir / "pfr_week_def" / "*.parquet")
+    player_stats = sql_path(clean_dir / "stats_player_week" / "*.parquet")
+    game_path = sql_path(staged_core_dir / "game.parquet")
+    player_path = sql_path(staged_core_dir / "player.parquet")
+    snaps = sql_path(clean_dir / "snap_counts" / "*.parquet")
+    ngs_pass = sql_path(clean_dir / "ngs_passing" / "ngs_passing.parquet")
+    ngs_rush = sql_path(clean_dir / "ngs_rushing" / "ngs_rushing.parquet")
+    ngs_rec = sql_path(clean_dir / "ngs_receiving" / "ngs_receiving.parquet")
+    pfr_pass = sql_path(clean_dir / "pfr_week_pass" / "*.parquet")
+    pfr_rush = sql_path(clean_dir / "pfr_week_rush" / "*.parquet")
+    pfr_rec = sql_path(clean_dir / "pfr_week_rec" / "*.parquet")
+    pfr_def = sql_path(clean_dir / "pfr_week_def" / "*.parquet")
     game_id = "coalesce(s.game_id, snap.game_id)"
     player_id = "coalesce(s.player_id, snap.player_id)"
     season = "coalesce(s.season, g.season)"
     week = "coalesce(s.week, g.week)"
     team = f"coalesce({_norm_team('s.team')}, snap.team)"
     opponent = f"coalesce({_norm_team('s.opponent_team')}, snap.opponent)"
-    sb_week_expr = (
-        "CASE WHEN season_type = 'POST' AND ((season <= 2020 AND week = 22) OR (season >= 2021 AND week = 23)) "
-        "THEN week - 1 ELSE week END"
-    )
     query = f"""
         WITH snap AS (
             SELECT sn.game_id, sp.gsis_id AS player_id,
@@ -311,7 +312,7 @@ def _build_player_game_table(connection: duckdb.DuckDBPyConnection, clean_dir: P
             JOIN read_parquet('{player_path}') sp ON NULLIF(sn.pfr_player_id, '') = NULLIF(sp.pfr_id, '')
         ),
         ngs_p AS (
-            SELECT season, {sb_week_expr} AS week, player_gsis_id AS player_id,
+            SELECT season, {NGS_WEEK_AS_SCHEDULE_WEEK} AS week, player_gsis_id AS player_id,
                    attempts AS ngs_pass_attempts,
                    avg_time_to_throw AS ngs_pass_avg_time_to_throw,
                    avg_completed_air_yards AS ngs_pass_avg_completed_air_yards,
@@ -327,7 +328,7 @@ def _build_player_game_table(connection: duckdb.DuckDBPyConnection, clean_dir: P
             FROM read_parquet('{ngs_pass}') WHERE week > 0
         ),
         ngs_ru AS (
-            SELECT season, {sb_week_expr} AS week, player_gsis_id AS player_id,
+            SELECT season, {NGS_WEEK_AS_SCHEDULE_WEEK} AS week, player_gsis_id AS player_id,
                    efficiency AS ngs_rush_efficiency,
                    percent_attempts_gte_eight_defenders AS ngs_rush_pct_8_box,
                    avg_time_to_los AS ngs_rush_avg_time_to_los,
@@ -338,7 +339,7 @@ def _build_player_game_table(connection: duckdb.DuckDBPyConnection, clean_dir: P
             FROM read_parquet('{ngs_rush}') WHERE week > 0
         ),
         ngs_re AS (
-            SELECT season, {sb_week_expr} AS week, player_gsis_id AS player_id,
+            SELECT season, {NGS_WEEK_AS_SCHEDULE_WEEK} AS week, player_gsis_id AS player_id,
                    avg_cushion AS ngs_rec_avg_cushion,
                    avg_separation AS ngs_rec_avg_separation,
                    avg_intended_air_yards AS ngs_rec_avg_intended_air_yards,
@@ -429,8 +430,13 @@ def _build_player_game_table(connection: duckdb.DuckDBPyConnection, clean_dir: P
 def _build_play_tables(connection: duckdb.DuckDBPyConnection, clean_dir: Path, staged_core_dir: Path) -> int:
     """Build per-season `core/play/play_<season>.parquet` so peak RAM stays low."""
     total_rows = 0
-    for pbp_path in sorted((clean_dir / "pbp").glob("play_by_play_*.parquet")):
-        season = int(pbp_path.stem.rsplit("_", 1)[1])
+    for pbp_path in sorted((clean_dir / "pbp").glob("*.parquet")):
+        season_match = re.fullmatch(r"play_by_play_(\d{4})", pbp_path.stem)
+        if season_match is None:  # the checks read every file in the folder, so a stray copy would count twice
+            raise CoreBuildFailed(
+                [f"{pbp_path} is not a play-by-play season file; move it out of clean/pbp/ and run build-core again"]
+            )
+        season = int(season_match.group(1))
         part_path = clean_dir / "pbp_participation" / f"pbp_participation_{season}.parquet"
         ftn_path = clean_dir / "ftn_charting" / f"ftn_charting_{season}.parquet"
 
@@ -453,7 +459,7 @@ def _build_play_tables(connection: duckdb.DuckDBPyConnection, clean_dir: Path, s
                 part.defense_coverage_type
             """
             part_join = (
-                f"LEFT JOIN read_parquet('{_sql_path(part_path)}') part "
+                f"LEFT JOIN read_parquet('{sql_path(part_path)}') part "
                 "ON p.game_id = part.nflverse_game_id AND p.play_id = CAST(part.play_id AS DOUBLE)"
             )
         else:
@@ -502,7 +508,7 @@ def _build_play_tables(connection: duckdb.DuckDBPyConnection, clean_dir: Path, s
                 ftn.is_qb_fault_sack AS ftn_is_qb_fault_sack
             """
             ftn_join = (
-                f"LEFT JOIN read_parquet('{_sql_path(ftn_path)}') ftn "
+                f"LEFT JOIN read_parquet('{sql_path(ftn_path)}') ftn "
                 "ON p.game_id = ftn.nflverse_game_id AND p.play_id = CAST(ftn.nflverse_play_id AS DOUBLE)"
             )
         else:
@@ -541,7 +547,7 @@ def _build_play_tables(connection: duckdb.DuckDBPyConnection, clean_dir: Path, s
                 {_norm_team("p.defteam")} AS defteam,
                 {part_select},
                 {ftn_select}
-            FROM read_parquet('{_sql_path(pbp_path)}') p
+            FROM read_parquet('{sql_path(pbp_path)}') p
             {part_join}
             {ftn_join}
             ORDER BY p.game_id, p.play_id
@@ -553,8 +559,12 @@ def _build_play_tables(connection: duckdb.DuckDBPyConnection, clean_dir: Path, s
 def _build_player_week_status_table(
     connection: duckdb.DuckDBPyConnection, clean_dir: Path, staged_core_dir: Path
 ) -> int:
-    rosters = _sql_path(clean_dir / "weekly_rosters" / "*.parquet")
-    injuries = _sql_path(clean_dir / "injuries" / "*.parquet")
+    rosters = sql_path(clean_dir / "weekly_rosters" / "*.parquet")
+    injuries = sql_path(clean_dir / "injuries" / "*.parquet")
+    # The only record of when an injury report was last changed. Upstream stopped publishing it with the 2025
+    # season, so a lake that holds no earlier season has no such column at all.
+    injury_columns = connection.sql(f"SELECT * FROM read_parquet('{injuries}', union_by_name=true) LIMIT 0").columns
+    report_modified = "date_modified" if "date_modified" in injury_columns else "CAST(NULL AS TIMESTAMPTZ)"
     query = f"""
         WITH wr AS (
             SELECT
@@ -584,7 +594,8 @@ def _build_player_week_status_table(
                 report_status,
                 practice_primary_injury,
                 practice_secondary_injury,
-                practice_status
+                practice_status,
+                {report_modified} AS injury_report_modified_utc
             FROM read_parquet('{injuries}', union_by_name=true)
             WHERE CAST(season AS INTEGER) >= 2016
         )
@@ -604,7 +615,8 @@ def _build_player_week_status_table(
             inj.report_status,
             inj.practice_primary_injury,
             inj.practice_secondary_injury,
-            inj.practice_status
+            inj.practice_status,
+            inj.injury_report_modified_utc
         FROM wr
         FULL OUTER JOIN inj USING (season, week, team, gsis_id)
         ORDER BY season, week, team, gsis_id
@@ -615,8 +627,8 @@ def _build_player_week_status_table(
 def _build_depth_chart_snapshot_table(
     connection: duckdb.DuckDBPyConnection, clean_dir: Path, staged_core_dir: Path
 ) -> int:
-    depth_charts = _sql_path(clean_dir / "depth_charts" / "*.parquet")
-    player_path = _sql_path(staged_core_dir / "player.parquet")
+    depth_charts = sql_path(clean_dir / "depth_charts" / "*.parquet")
+    player_path = sql_path(staged_core_dir / "player.parquet")
     query = f"""
         SELECT
             dc.dt,
@@ -703,7 +715,7 @@ def _publish_staged_core(lake: LakeStore, staged_core_dir: Path, core_state: Cor
     lake.save_core_state(core_state)
 
 
-def build_core_tables(lake: LakeStore, *, strict_min_season: int = 2016) -> CoreBuildSummary:
+def build_core_tables(lake: LakeStore) -> CoreBuildSummary:
     """Build all 7 core tables into staging, run Strategy 1 checks, and publish only if all errors pass."""
     started_at = utc_now()
     run_id = f"core_{started_at:%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:4]}"
@@ -731,10 +743,7 @@ def build_core_tables(lake: LakeStore, *, strict_min_season: int = 2016) -> Core
                         raise CoreBuildFailed([f"core/{table_name} could not be built: {reason}"]) from error
                     logger.info("staged core/%s (%d rows)", table_name, row_counts[table_name])
 
-                core_report = run_checks(
-                    connection,
-                    build_core_checks(staged_core_dir, lake.clean_dir, strict_min_season=strict_min_season),
-                )
+                core_report = run_checks(connection, build_core_checks(staged_core_dir, lake.clean_dir))
             finally:
                 connection.close()
 
@@ -767,7 +776,7 @@ def build_core_tables(lake: LakeStore, *, strict_min_season: int = 2016) -> Core
             shutil.rmtree(lake.staging_dir, ignore_errors=True)
 
 
-def verify_core_tables(lake: LakeStore, *, deep: bool = False, strict_min_season: int = 2016) -> tuple[int, list[str]]:
+def verify_core_tables(lake: LakeStore, *, deep: bool = False) -> tuple[int, list[str]]:
     """Verify published `data/core/` tables against `core_state.json`, the clean layer and Strategy 1 checks."""
     core_state = lake.load_core_state()
     if core_state is None:
@@ -816,7 +825,7 @@ def verify_core_tables(lake: LakeStore, *, deep: bool = False, strict_min_season
             )
             try:
                 actual_rows = int(
-                    connection.sql(f"SELECT count(*) FROM read_parquet('{_sql_path(table_glob)}')").fetchall()[0][0]
+                    connection.sql(f"SELECT count(*) FROM read_parquet('{sql_path(table_glob)}')").fetchall()[0][0]
                 )
             except duckdb.Error as error:
                 errors.append(f"core/{table_name}: core parquet cannot be read ({error}); run build-core")
@@ -835,8 +844,7 @@ def verify_core_tables(lake: LakeStore, *, deep: bool = False, strict_min_season
             return checked_files, [stale_core]
         report = run_checks(
             connection,
-            build_clean_health_checks(lake.clean_dir)
-            + build_core_checks(lake.core_dir, lake.clean_dir, strict_min_season=strict_min_season),
+            build_clean_health_checks(lake.clean_dir) + build_core_checks(lake.core_dir, lake.clean_dir),
         )
     finally:
         connection.close()
