@@ -23,6 +23,7 @@ import dataclasses
 import filecmp
 import logging
 import os
+import re
 import shutil
 import time
 import uuid
@@ -692,7 +693,10 @@ def verify_lake(
     if deep:  # a raw snapshot is named after its own checksum, so every one is checked, not only the newest
         for dataset_name in selected_datasets_by_name:
             for raw_path in sorted((lake.raw_dir / dataset_name).glob("*/*")):
-                if not raw_path.stem.endswith(compute_file_sha256(raw_path)[:12]):
+                named_checksum = raw_path.stem.rpartition("_")[2]
+                if not re.fullmatch("[0-9a-f]{12}", named_checksum):
+                    continue  # not a snapshot: a file the lake did not write, such as desktop.ini
+                if compute_file_sha256(raw_path)[:12] != named_checksum:
                     errors.append(
                         f"raw file {lake.relative_posix_path(raw_path)} no longer matches the checksum in its name"
                     )

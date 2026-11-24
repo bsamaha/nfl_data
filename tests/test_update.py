@@ -574,6 +574,7 @@ def test_verify_notices_damage_to_published_files(upstream, lake):
         raw_file_path.write_bytes(b"tampered")
         assert verify_lake(catalog, lake) == (1, []) and verify_lake(catalog, lake, deep=True).errors != []
         raw_file_path.write_bytes(intact_raw_bytes)
+    (raw_file_path.parent / "desktop.ini").write_text("a file the lake did not write is not a damaged snapshot")
     assert verify_lake(catalog, lake, deep=True) == (1, [])
     for raw_file_path in stored_raw_paths(lake):
         raw_file_path.unlink()
