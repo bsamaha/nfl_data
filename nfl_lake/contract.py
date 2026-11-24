@@ -73,12 +73,6 @@ def count_key_violations(frame: pl.DataFrame, key_columns: Sequence[str]) -> Key
     )
 
 
-def _is_sorted_by_key(frame: pl.DataFrame, key_columns: Sequence[str]) -> bool:
-    if len(key_columns) == 1:
-        return frame[key_columns[0]].is_sorted()
-    return frame.select(pl.struct(key_columns)).to_series().is_sorted()
-
-
 def _enforce_key_rules(raw_frame: pl.DataFrame, dataset: Dataset) -> tuple[pl.DataFrame, pl.DataFrame | None, int]:
     """Enforce null-key handling and deduplication. Returns (clean_frame, rejected_frame, deduped_count)."""
     key_columns = dataset.key_columns
@@ -129,9 +123,7 @@ def _enforce_key_rules(raw_frame: pl.DataFrame, dataset: Dataset) -> tuple[pl.Da
     if clean_frame.height == 0:
         raise ContractError("no rows left to publish")
 
-    if not _is_sorted_by_key(clean_frame, key_columns):
-        clean_frame = clean_frame.sort(key_columns)
-    return clean_frame, rejected_frame, deduped_row_count
+    return clean_frame.sort(key_columns), rejected_frame, deduped_row_count
 
 
 def _check_against_previous(

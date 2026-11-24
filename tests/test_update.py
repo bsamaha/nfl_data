@@ -19,7 +19,7 @@ from conftest import (
 from polars.testing import assert_frame_equal
 
 from nfl_lake.pipeline import UpdateFailed, run_update, verify_lake
-from nfl_lake.source import FetchResult, LocalDirSource
+from nfl_lake.source import FetchResult, LocalDirSource, SourceError
 from nfl_lake.store import LakeLocked
 
 
@@ -48,14 +48,8 @@ def test_first_run_publishes_and_an_identical_second_run_changes_nothing(upstrea
     first_summary = run_update(catalog, upstream.source, lake)
     assert first_summary.fetched_file_ids == first_summary.rebuilt_file_ids == [STATS_FILE_ID]
     assert not lake.raw_dir.exists()  # default history is latest: no raw copy is kept on disk
-    # same columns and types, sorted by key, with a plain-dict contract in clean_state.json
+    # same columns and types, sorted by key
     assert_frame_equal(read_clean_frame(lake), make_stats_frame().sort("player_id", "game_id"))
-    assert lake.load_clean_state()[STATS_FILE_ID]["contract"] == {
-        "build": 1,
-        "key": ["player_id", "game_id"],
-        "reject_null_keys": False,
-        "keep_last_by": None,
-    }
 
     clean_file_path = lake.clean_file_path("stats", STATS_FILENAME)
     clean_before = (clean_file_path.read_bytes(), clean_file_path.stat().st_mtime_ns)
@@ -130,6 +124,7 @@ def test_one_bad_file_blocks_its_dataset_while_other_datasets_still_publish(upst
         run_update(catalog, upstream.source, lake)
     assert first_failure.value.published_file_count == 1
     assert published_targets(lake) == 8  # neither season of stats published
+    assert lake.load_run_records()[-1]["unchanged"] == 0  # and neither is recorded as unchanged
     assert read_clean_frame(lake, "games", "games.parquet").height == 2
     assert len(stored_raw_paths(lake, "games", "games.parquet")) == 2
 
@@ -183,17 +178,18 @@ def test_failure_while_publishing_is_counted_and_the_next_run_finishes(upstream,
     catalog = build_catalog(stats=STATS_DATASET_SPEC, games=GAMES_DATASET_SPEC)
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
     upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1"]}))
-    blocking_dir = lake.clean_file_path("games", "games.parquet")
-    blocking_dir.mkdir(parents=True)  # a folder where the second clean file belongs, so that file cannot be moved in
+    blocking_dir = lake.clean_file_path("stats", STATS_FILENAME)
+    blocking_dir.mkdir(parents=True)  # a folder where the first clean file belongs, so that file cannot be moved in
 
     with pytest.raises(UpdateFailed) as failure:
         run_update(catalog, upstream.source, lake)
-    assert failure.value.published_file_count == 1 and read_clean_frame(lake).height == 2
-    assert list(lake.load_clean_state()) == [STATS_FILE_ID]  # the record matches what is in clean/
+    # the dataset after the one that failed is still published
+    assert failure.value.published_file_count == 1 and read_clean_frame(lake, "games", "games.parquet").height == 1
+    assert list(lake.load_clean_state()) == [GAMES_FILE_ID]  # the record matches what is in clean/
 
     blocking_dir.rmdir()
     summary = run_update(catalog, upstream.source, lake)
-    assert summary.fetched_file_ids == [GAMES_FILE_ID] and summary.rebuilt_file_ids == [GAMES_FILE_ID]
+    assert summary.fetched_file_ids == [STATS_FILE_ID] and summary.rebuilt_file_ids == [STATS_FILE_ID]
     assert len(lake.load_clean_state()) == 2
 
 
@@ -230,6 +226,7 @@ def test_keep_last_by_resolves_a_repeated_key(upstream, lake):
         "min_season": 2009,
         "key": ["week", "gsis_id"],
         "keep_last_by": "date_modified",
+        "history": "all",
     }
     injuries_frame = pl.DataFrame(
         {
@@ -245,6 +242,11 @@ def test_keep_last_by_resolves_a_repeated_key(upstream, lake):
     clean_injuries = read_clean_frame(lake, "injuries", "injuries_2024.parquet")
     assert summary.deduped_rows_by_file == {"injuries/injuries_2024.parquet": 1}
     assert clean_injuries.filter(pl.col("gsis_id") == "a")["report_status"].item() == "Out"  # the later report
+
+    # upstream drops the earlier report itself: the clean file comes out the same, but the raw file is a new version
+    upstream.put("injuries", "injuries_2024.parquet", injuries_frame.filter(pl.col("report_status") != "Questionable"))
+    run_update(build_catalog(injuries=injuries_spec), upstream.source, lake)
+    assert len(stored_raw_paths(lake, "injuries", "injuries_2024.parquet")) == 2
 
     # without the ordering column there is nothing to choose by, so the same repeat fails the run
     upstream.put("injuries", "injuries_2025.parquet", injuries_frame.drop("date_modified"))
@@ -322,6 +324,13 @@ def test_missing_or_deselected_upstream_files_are_errors_not_skips(upstream, lak
     with pytest.raises(UpdateFailed):
         run_update(catalog, upstream.source, lake)
 
+    # a dry run shows what the real run would still do for the other datasets, beside the error
+    upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1"]}))
+    dry_summary = run_update(
+        build_catalog(stats=STATS_DATASET_SPEC, games=GAMES_DATASET_SPEC), upstream.source, lake, dry_run=True
+    )
+    assert dry_summary.fetched_file_ids == [GAMES_FILE_ID] and len(dry_summary.plan_errors) == 1
+
     upstream.put("stats_player", "renamed_2024.parquet", make_stats_frame())  # the release is, with no matching file
     with pytest.raises(UpdateFailed):
         run_update(catalog, upstream.source, lake)
@@ -358,18 +367,13 @@ class BitFlippingSource(LocalDirSource):
 class NoChecksumsSource(LocalDirSource):
     """An upstream that publishes no checksum for its files."""
 
-    @staticmethod
-    def _strip_checksums(release_assets):
-        return {filename: dataclasses.replace(asset, sha256=None) for filename, asset in release_assets.items()}
-
     def list_assets(self):
         return {
-            release_tag: self._strip_checksums(release_assets)
+            release_tag: {
+                filename: dataclasses.replace(asset, sha256=None) for filename, asset in release_assets.items()
+            }
             for release_tag, release_assets in super().list_assets().items()
         }
-
-    def list_release_assets(self, release_tag):
-        return self._strip_checksums(super().list_release_assets(release_tag))
 
 
 @pytest.mark.parametrize("damaged_source_cls", [TruncatingSource, BitFlippingSource])
@@ -390,18 +394,10 @@ class StaleListingSource(LocalDirSource):
         self.stale_listings = stale_listings
         self.listing_lag_seconds = listing_lag_seconds
         self.listings_served = 0
-        self.rechecked_tags: list[str] = []
 
     def list_assets(self):
         self.listings_served += 1
         return self.listing_at_creation if self.listings_served <= self.stale_listings else super().list_assets()
-
-    def list_release_assets(self, release_tag):
-        self.listings_served += 1
-        self.rechecked_tags.append(release_tag)
-        if self.listings_served <= self.stale_listings:
-            return self.listing_at_creation.get(release_tag, {})
-        return super().list_release_assets(release_tag)
 
 
 @pytest.mark.parametrize(
@@ -424,10 +420,43 @@ def test_file_replaced_upstream_after_the_listing_is_fetched_against_a_new_listi
     run_update(catalog, source, lake)
 
     assert source.listings_served == stale_listings + 1
-    assert source.rechecked_tags == ["stats_player"] * stale_listings
     (raw_file_path,) = stored_raw_paths(lake)
     assert raw_file_path.read_bytes() == upstream_file_path.read_bytes()
     assert_frame_equal(read_clean_frame(lake), replacement.sort("player_id", "game_id"))
+
+
+def test_listing_that_never_catches_up_costs_the_run_two_waits_in_all_not_two_per_dataset(upstream, lake):
+    catalog = build_catalog(stats=STATS_DATASET_SPEC, games=GAMES_DATASET_SPEC)
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame(targets=8))
+    upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1"]}))
+    source = StaleListingSource(upstream.root_dir, stale_listings=99, listing_lag_seconds=0.01)
+    upstream.put(
+        "stats_player", STATS_FILENAME, make_stats_frame(targets=10).head(1)
+    )  # both replaced after the listing
+    upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1", "g2"]}))
+
+    with pytest.raises(UpdateFailed):
+        run_update(catalog, source, lake)
+    # stats lists again three times, waiting before the second and third; games once, because no wait is left
+    assert source.listings_served == 1 + 3 + 1
+
+
+def test_failed_second_listing_stops_only_its_own_dataset(upstream, lake):
+    class SecondListingFails(StaleListingSource):
+        def list_assets(self):
+            if self.listings_served:
+                raise SourceError("rate limit reached")
+            return super().list_assets()
+
+    catalog = build_catalog(stats=STATS_DATASET_SPEC, games=GAMES_DATASET_SPEC)
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame(targets=8))
+    upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1"]}))
+    source = SecondListingFails(upstream.root_dir)
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame(targets=10).head(1))  # replaced after the listing
+
+    with pytest.raises(UpdateFailed):
+        run_update(catalog, source, lake)
+    assert list(lake.load_clean_state()) == [GAMES_FILE_ID]
 
 
 def test_file_that_is_not_parquet_is_refused(upstream, lake):

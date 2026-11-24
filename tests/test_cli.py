@@ -104,6 +104,12 @@ def test_failed_update_exits_1_and_status_still_exits_0(cli, upstream, lake):
     assert command_succeeded(result), result.output
 
 
+def test_dry_run_exits_1_when_a_dataset_cannot_be_planned(make_cli, upstream, lake):
+    cli = make_cli(stats=STATS_DATASET_SPEC, games=GAMES_DATASET_SPEC)
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame())  # the release games needs is not there
+    assert command_refused(cli("update", "--dry-run")) and not lake.root_dir.exists()
+
+
 def test_bad_arguments_are_refused(cli, upstream, lake):
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
     invalid_invocations = [

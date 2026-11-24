@@ -110,10 +110,7 @@ def _handle_cli_errors() -> Iterator[None]:
         yield
     except UpdateFailed as error:
         if error.published_file_count:
-            publish_outcome = (
-                f"{error.published_file_count} file(s) were published; "
-                "the failing dataset(s) were left unchanged — run update again"
-            )
+            publish_outcome = f"{error.published_file_count} file(s) were published; run update again for the rest"
         else:
             publish_outcome = "nothing was published; the clean layer is unchanged"
         _exit_with_errors(error.errors + [publish_outcome])
@@ -150,6 +147,8 @@ def _cmd_update(args: argparse.Namespace) -> None:
         )
         for file_id in summary.fetched_file_ids:
             print(f"  fetch {file_id}")
+        if summary.plan_errors:  # a real run would do the above and then fail on these
+            _exit_with_errors(summary.plan_errors)
         return
     print(f"{summary.run_id}: ok")
     print(

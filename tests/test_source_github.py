@@ -152,22 +152,11 @@ def test_listing_caches_etags_and_reuses_cached_pages_on_304(monkeypatch, tmp_pa
     dry_listing = GitHubReleasesSource("o/r", cache_path=dry_cache_path, write_cache=False).list_assets()
     assert dry_listing == first_listing and not dry_cache_path.exists()
 
-
-def test_list_release_assets_queries_one_tag_and_handles_missing_tag(monkeypatch):
-    def respond(attempt_number, request):
-        if request.full_url.endswith("/releases/tags/pbp"):
-            return io.BytesIO(json.dumps(make_release_payload("pbp", "a.parquet")).encode())
-        raise make_http_error(404)
-
-    requests = stub_urlopen(monkeypatch, respond)
-    source = GitHubReleasesSource("o/r", backoff_seconds=0)
-
-    pbp_assets = source.list_release_assets("pbp")
-    assert set(pbp_assets) == {"a.parquet"}
-    assert source.list_release_assets("missing") == {}
-    assert len(requests) == 2
-    assert requests[0].full_url.endswith("/repos/o/r/releases/tags/pbp")
-    assert requests[1].full_url.endswith("/repos/o/r/releases/tags/missing")
+    # A cache page that lost a field is not used, and a cache that cannot be written is not written.
+    cache_path.write_text(json.dumps({requests[0].full_url: {"etag": '"etag-page-1"', "releases": [{"assets": []}]}}))
+    assert source.list_assets() == first_listing and requests[-1].get_header("If-none-match") is None
+    unwritable_cache_path = cache_path / "listing_cache.json"  # its folder is a file
+    assert GitHubReleasesSource("o/r", cache_path=unwritable_cache_path).list_assets() == first_listing
 
 
 def test_rate_limit_is_final(monkeypatch):

@@ -52,9 +52,9 @@ The first run downloads every file in the catalog, about 600 MB as of November 2
 
 ### What a run guarantees
 
-- **Reruns change no data.** A second run with no upstream change fetches nothing and rewrites no data file; GitHub release pages are cached with ETags so unchanged listings return `304 Not Modified`, and one line is added to the run log. If upstream republishes a file whose rows are unchanged (for example, only its Parquet timestamp changed), clean and raw files are left untouched and only the manifest metadata is refreshed.
+- **Reruns change no data.** A second run with no upstream change fetches nothing and rewrites no data file; it adds one line to the run log. When upstream republishes a file with the same rows, as it often does with only a new build time, the file is fetched but its clean and raw files are left as they are, and only its record is refreshed.
 - **Corrections land.** A season file is replaced whole from the newest upstream copy. Nothing is merged row by row.
-- **Failures isolate to their dataset.** Each dataset is fetched, checked, and published atomically. If any file in a dataset fails to download intact or breaks its contract, nothing in that dataset is published and its clean layer stays as it was, while other healthy datasets in the same run still publish; the run exits 1 and records the errors. Publishing within a dataset goes file by file: a file's set-aside rows are moved or removed first, then its clean file is renamed. If it is interrupted, for example by a clean file that is open in another program, the error says how many files were published and the next run finishes the rest.
+- **A failure stays in its dataset.** A dataset is published only if every one of its files downloaded intact and passed its contract; otherwise its clean layer stays as it was. The other datasets in the run still publish, and the run exits 1 and records the errors. Publishing goes file by file: a file's set-aside rows are moved or removed first, then its clean file is renamed. If it is interrupted, for example by a clean file that is open in another program, the error says how many files were published and the next run finishes the rest.
 - **Keys hold.** Every clean file has a unique, non-null key, as declared in the catalog.
 - **Files do not shrink or lose columns silently.** A file that loses more than 2% of its rows, drops a column or changes a column's type is refused. `--accept-schema-change` publishes a file whose columns were dropped or retyped, once downstream code is ready for it. It does not waive the row check: to accept a real drop in rows, raise that dataset's `max_row_drop` in the catalog.
 - **Types are kept.** Clean files have the same columns and types as the files nflverse publishes.
@@ -69,10 +69,10 @@ Everything is under `data/`, which git ignores. Set `NFL_LAKE_ROOT` to put it el
 | `data/clean/<dataset>/<file name>` | The newest version of each file with its contract applied. Query this. |
 | `data/rejects/<dataset>/<file name>` | Rows set aside because their key was null, such as stat rows with no player |
 | `data/manifest/clean_state.json` | Which upstream file, checksums and contract rules each clean file was built from |
-| `data/manifest/listing_cache.json` | Cached GitHub release pages and ETags used for conditional `If-None-Match` requests |
+| `data/manifest/listing_cache.json` | The last GitHub release listing, so that an unchanged one is not downloaded again |
 | `data/manifest/runs.jsonl` | One line per run: status, errors, counts |
 
-Datasets marked `history: all` in `catalog/datasets.yml` keep every raw snapshot on disk; the rest keep only the clean file and drop staged downloads as soon as they are read into memory. A download is kept only when its dataset publishes, so a dataset that fails fetches its files again next time, and a changed rule on a dataset with no raw snapshot fetches its files again to rebuild them.
+Datasets marked `history: all` in `catalog/datasets.yml` keep a raw snapshot of every upstream version whose rows differ from the one before; the rest keep only the clean file. A download is kept only when its dataset publishes, so a dataset that fails fetches its files again next time, and a changed rule on a dataset with no raw snapshot fetches its files again to rebuild them.
 
 ### Querying
 
@@ -102,7 +102,7 @@ Join games on `game_id`, not on team codes; `docs/SOURCE_INVENTORY.md` explains 
 | Variable | Effect |
 |---|---|
 | `NFL_LAKE_ROOT` | Folder for the lake. Default: `data` |
-| `GITHUB_TOKEN` | Optional. Cached unchanged listings return `304` and do not count against the 60/hour anonymous limit |
+| `GITHUB_TOKEN` | Optional. A run makes one GitHub API call, and a few more when a download does not match the listing; without a token the limit is 60 an hour |
 | `NFL_LAKE_SOURCE_DIR` | Read files from a local folder of `<release>/<file>` instead of GitHub |
 | `LOG_LEVEL` | Progress detail on stderr. Default: `INFO` |
 
