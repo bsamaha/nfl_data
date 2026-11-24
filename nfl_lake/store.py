@@ -133,11 +133,23 @@ class LakeStore:
             return {}
         try:
             core_state = json.loads(state_path.read_text(encoding="utf-8"))
+            if not isinstance(core_state, dict):
+                raise TypeError("top-level JSON must be an object")
             for table_name, entry in core_state.items():
                 if not isinstance(entry, dict) or not {"rows", "files", "built_at"} <= entry.keys():
                     raise ValueError(f"the entry for {table_name} is incomplete")
+                if not isinstance(entry["rows"], int) or isinstance(entry["rows"], bool) or entry["rows"] < 0:
+                    raise ValueError(f"the entry for {table_name} has invalid rows count")
+                if not isinstance(entry["built_at"], str):
+                    raise TypeError(f"the entry for {table_name} has invalid built_at timestamp")
                 if not isinstance(entry["files"], dict):
                     raise TypeError(f"the entry for {table_name} has invalid files mapping")
+                for rel_path, sha_hex in entry["files"].items():
+                    if not isinstance(rel_path, str) or not isinstance(sha_hex, str):
+                        raise TypeError(f"the entry for {table_name} has invalid file checksum entry")
+                    path_parts = Path(rel_path).parts
+                    if not path_parts or path_parts[0] != "core" or ".." in path_parts or Path(rel_path).is_absolute():
+                        raise ValueError(f"the entry for {table_name} points outside core/: {rel_path}")
         except (ValueError, TypeError, AttributeError) as error:
             raise ValueError(f"{state_path} is damaged: {error}") from error
         return core_state

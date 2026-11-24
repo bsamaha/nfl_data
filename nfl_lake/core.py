@@ -689,6 +689,12 @@ def verify_core_tables(lake: LakeStore, *, deep: bool = False, strict_min_season
         if not entry["files"]:
             errors.append(f"core/{table_name}: no files recorded in manifest/core_state.json; run build-core")
             continue
+        if table_name == "play" and (lake.core_dir / "play").exists():
+            actual_play_files = {
+                lake.relative_posix_path(path) for path in sorted((lake.core_dir / "play").glob("*.parquet"))
+            }
+            for extra_path in sorted(actual_play_files - set(entry["files"])):
+                errors.append(f"{extra_path}: untracked core file on disk; run build-core to clean up")
         for rel_path, expected_sha256 in sorted(entry["files"].items()):
             checked_files += 1
             file_path = lake.root_dir / rel_path

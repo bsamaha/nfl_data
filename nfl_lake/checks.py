@@ -279,6 +279,9 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
     status = _sql_path(core_dir / "player_week_status.parquet")
     depth = _sql_path(core_dir / "depth_chart_snapshot.parquet")
 
+    clean_schedules = _sql_path(clean_dir / "schedules" / "games.parquet")
+    clean_players = _sql_path(clean_dir / "players" / "players.parquet")
+    clean_depth = _sql_path(clean_dir / "depth_charts" / "*.parquet")
     clean_pbp = _sql_path(clean_dir / "pbp" / "*.parquet")
     clean_player_stats = _sql_path(clean_dir / "stats_player_week" / "*.parquet")
     clean_snaps = _sql_path(clean_dir / "snap_counts" / "*.parquet")
@@ -340,9 +343,21 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
             severity="error",
             description="Core joins preserve exact source row counts (zero fan-out or accidental row drops)",
             query=f"""
-                SELECT 'player_game' AS table_name,
-                       (SELECT count(*) FROM read_parquet('{player_game}')) AS core_rows,
-                       (SELECT count(*) FROM read_parquet('{clean_player_stats}')) AS source_rows
+                SELECT 'game' AS table_name,
+                       (SELECT count(*) FROM read_parquet('{game}')) AS core_rows,
+                       (SELECT count(*) FROM read_parquet('{clean_schedules}')) AS source_rows
+                WHERE (SELECT count(*) FROM read_parquet('{game}'))
+                   != (SELECT count(*) FROM read_parquet('{clean_schedules}'))
+                UNION ALL
+                SELECT 'player',
+                       (SELECT count(*) FROM read_parquet('{player}')),
+                       (SELECT count(*) FROM read_parquet('{clean_players}'))
+                WHERE (SELECT count(*) FROM read_parquet('{player}'))
+                   != (SELECT count(*) FROM read_parquet('{clean_players}'))
+                UNION ALL
+                SELECT 'player_game',
+                       (SELECT count(*) FROM read_parquet('{player_game}')),
+                       (SELECT count(*) FROM read_parquet('{clean_player_stats}'))
                 WHERE (SELECT count(*) FROM read_parquet('{player_game}'))
                    != (SELECT count(*) FROM read_parquet('{clean_player_stats}'))
                 UNION ALL
@@ -351,6 +366,12 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                        (SELECT count(*) FROM read_parquet('{clean_pbp}'))
                 WHERE (SELECT count(*) FROM read_parquet('{play}'))
                    != (SELECT count(*) FROM read_parquet('{clean_pbp}'))
+                UNION ALL
+                SELECT 'depth_chart_snapshot',
+                       (SELECT count(*) FROM read_parquet('{depth}')),
+                       (SELECT count(*) FROM read_parquet('{clean_depth}'))
+                WHERE (SELECT count(*) FROM read_parquet('{depth}'))
+                   != (SELECT count(*) FROM read_parquet('{clean_depth}'))
                 UNION ALL
                 SELECT 'team_game_strict_era',
                        (SELECT count(*) FROM read_parquet('{team_game}') WHERE season >= {strict_min_season}),
@@ -443,6 +464,8 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                     UNION ALL SELECT 'game.away_team', away_team FROM read_parquet('{game}')
                     UNION ALL SELECT 'team_game.team', team FROM read_parquet('{team_game}')
                     UNION ALL SELECT 'team_game.opponent', opponent FROM read_parquet('{team_game}')
+                    UNION ALL SELECT 'player.latest_team', latest_team FROM read_parquet('{player}')
+                    UNION ALL SELECT 'player.draft_team', draft_team FROM read_parquet('{player}')
                     UNION ALL SELECT 'player_game.team', team FROM read_parquet('{player_game}')
                     UNION ALL SELECT 'player_game.opponent', opponent FROM read_parquet('{player_game}')
                     UNION ALL SELECT 'play.home_team', home_team FROM read_parquet('{play}')
@@ -572,10 +595,10 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                 LEFT JOIN p USING (game_id, team)
                 WHERE t.season >= {strict_min_season}
                   AND (
-                      t.passing_yards != coalesce(p.pass_yds, 0)
-                      OR t.rushing_yards != coalesce(p.rush_yds, 0)
-                      OR t.passing_tds != coalesce(p.pass_tds, 0)
-                      OR t.rushing_tds != coalesce(p.rush_tds, 0)
+                      t.passing_yards IS DISTINCT FROM coalesce(p.pass_yds, 0)
+                      OR t.rushing_yards IS DISTINCT FROM coalesce(p.rush_yds, 0)
+                      OR t.passing_tds IS DISTINCT FROM coalesce(p.pass_tds, 0)
+                      OR t.rushing_tds IS DISTINCT FROM coalesce(p.rush_tds, 0)
                   )
             """,
         ),
@@ -586,7 +609,8 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
             query=f"""
                 SELECT game_id, team, attempts, targets, attempts - targets AS gap
                 FROM read_parquet('{team_game}')
-                WHERE season >= {strict_min_season} AND (attempts - targets < 0 OR attempts - targets > 15)
+                WHERE season >= {strict_min_season}
+                  AND (attempts IS NULL OR targets IS NULL OR attempts - targets < 0 OR attempts - targets > 15)
             """,
         ),
         DataCheck(
@@ -619,14 +643,16 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
         DataCheck(
             name="core_stat_ranges_valid",
             severity="error",
-            description=f"For {strict_min_season}+, completions <= attempts, receptions <= targets, and key stats stay within realistic NFL bounds",
+            description=f"For {strict_min_season}+, completions <= attempts, receptions <= targets, and key stats are non-null and within realistic NFL bounds",
             query=f"""
                 SELECT game_id, player_id, completions, attempts, receptions, targets,
                        passing_yards, rushing_yards, receiving_yards, offense_pct
                 FROM read_parquet('{player_game}')
                 WHERE season >= {strict_min_season}
                   AND (
-                      completions < 0 OR attempts < 0 OR carries < 0 OR receptions < 0 OR targets < 0
+                      completions IS NULL OR attempts IS NULL OR carries IS NULL OR receptions IS NULL OR targets IS NULL
+                      OR passing_yards IS NULL OR rushing_yards IS NULL OR receiving_yards IS NULL
+                      OR completions < 0 OR attempts < 0 OR carries < 0 OR receptions < 0 OR targets < 0
                       OR completions > attempts
                       OR receptions > targets
                       OR passing_yards < -50 OR passing_yards > 650
@@ -636,7 +662,9 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                   )
             """,
         ),
-        # 5. Pinned real anchor games (enforced whenever those games exist in the lake) --------------
+        # 5. Pinned real anchor games (enforced whenever those games exist in `core/game`) -----------
+        # Every comparison uses `IS DISTINCT FROM` + `LEFT JOIN` from `game` so a dropped row or NULL join column
+        # always fails instead of silently evaluating to SQL UNKNOWN.
         DataCheck(
             name="core_anchor_games_exact",
             severity="error",
@@ -646,47 +674,76 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                      tg AS (SELECT * FROM read_parquet('{team_game}')),
                      pg AS (SELECT * FROM read_parquet('{player_game}')),
                      dc AS (SELECT * FROM read_parquet('{depth}'))
-                -- Anchor 1: 2015_01_CIN_OAK (OAK -> LV, EDT 16:25 -> 20:25Z, Derek Carr & Andy Dalton snaps)
-                SELECT 'anchor_1_2015_oak_game' AS anchor, game_id AS key_id
+                -- Anchor 1: 2015_01_CIN_OAK (OAK -> LV, EDT 16:25 -> 20:25Z, Derek Carr snaps)
+                SELECT 'anchor_1_2015_oak_game' AS anchor, g.game_id AS key_id
                 FROM g
-                WHERE game_id = '2015_01_CIN_OAK'
+                WHERE g.game_id = '2015_01_CIN_OAK'
                   AND (
-                      home_team != 'LV' OR away_team != 'CIN' OR home_score != 13 OR away_score != 33
-                      OR strftime(kickoff_utc AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') != '2015-09-13T20:25:00Z'
+                      g.home_team IS DISTINCT FROM 'LV'
+                      OR g.away_team IS DISTINCT FROM 'CIN'
+                      OR g.home_score IS DISTINCT FROM 13
+                      OR g.away_score IS DISTINCT FROM 33
+                      OR strftime(g.kickoff_utc AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') IS DISTINCT FROM '2015-09-13T20:25:00Z'
                   )
                 UNION ALL
-                SELECT 'anchor_1_2015_oak_carr', pg.game_id
-                FROM pg
-                WHERE pg.game_id = '2015_01_CIN_OAK' AND pg.player_id = '00-0031280'
-                  AND (pg.team != 'LV' OR pg.passing_yards != 61 OR pg.offense_snaps != 23)
+                SELECT 'anchor_1_2015_oak_carr', g.game_id
+                FROM g
+                LEFT JOIN pg ON g.game_id = pg.game_id AND pg.player_id = '00-0031280'
+                WHERE g.game_id = '2015_01_CIN_OAK'
+                  AND (
+                      pg.player_id IS NULL
+                      OR pg.team IS DISTINCT FROM 'LV'
+                      OR pg.passing_yards IS DISTINCT FROM 61
+                      OR pg.offense_snaps IS DISTINCT FROM 23
+                  )
                 UNION ALL
                 -- Anchor 2a & 2b: EDT (17:00Z) vs EST (18:00Z) for 13:00 ET kickoffs
-                SELECT 'anchor_2a_edt_kickoff', game_id
+                SELECT 'anchor_2a_edt_kickoff', g.game_id
                 FROM g
-                WHERE game_id = '2025_01_ARI_NO'
-                  AND strftime(kickoff_utc AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') != '2025-09-07T17:00:00Z'
+                WHERE g.game_id = '2025_01_ARI_NO'
+                  AND strftime(g.kickoff_utc AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') IS DISTINCT FROM '2025-09-07T17:00:00Z'
                 UNION ALL
-                SELECT 'anchor_2b_est_kickoff', game_id
+                SELECT 'anchor_2b_est_kickoff', g.game_id
                 FROM g
-                WHERE game_id = '2025_10_BAL_MIN'
-                  AND strftime(kickoff_utc AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') != '2025-11-09T18:00:00Z'
+                WHERE g.game_id = '2025_10_BAL_MIN'
+                  AND strftime(g.kickoff_utc AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') IS DISTINCT FROM '2025-11-09T18:00:00Z'
                 UNION ALL
                 -- Anchor 3: Davante Adams 2024 trade (LV -> NYJ, snaps & stats exact)
-                SELECT 'anchor_3_adams_trade', pg.game_id
-                FROM pg
-                WHERE pg.player_id = '00-0031381' AND pg.game_id = '2024_03_CAR_LV'
-                  AND (pg.team != 'LV' OR pg.receiving_yards != 40 OR pg.offense_snaps != 61)
+                SELECT 'anchor_3_adams_trade', g.game_id
+                FROM g
+                LEFT JOIN pg ON g.game_id = pg.game_id AND pg.player_id = '00-0031381'
+                WHERE g.game_id = '2024_03_CAR_LV'
+                  AND (
+                      pg.player_id IS NULL
+                      OR pg.team IS DISTINCT FROM 'LV'
+                      OR pg.receiving_yards IS DISTINCT FROM 40
+                      OR pg.offense_snaps IS DISTINCT FROM 61
+                  )
                 UNION ALL
-                SELECT 'anchor_3_adams_trade', pg.game_id
-                FROM pg
-                WHERE pg.player_id = '00-0031381' AND pg.game_id = '2024_15_NYJ_JAX'
-                  AND (pg.team != 'NYJ' OR pg.receiving_yards != 198 OR pg.receiving_tds != 2 OR pg.offense_snaps != 54)
+                SELECT 'anchor_3_adams_trade', g.game_id
+                FROM g
+                LEFT JOIN pg ON g.game_id = pg.game_id AND pg.player_id = '00-0031381'
+                WHERE g.game_id = '2024_15_NYJ_JAX'
+                  AND (
+                      pg.player_id IS NULL
+                      OR pg.team IS DISTINCT FROM 'NYJ'
+                      OR pg.receiving_yards IS DISTINCT FROM 198
+                      OR pg.receiving_tds IS DISTINCT FROM 2
+                      OR pg.offense_snaps IS DISTINCT FROM 54
+                  )
                 UNION ALL
-                -- Anchor 4: Super Bowl LVIII OT (2023_22_SF_KC) + NGS SB week 23->22 join!
-                SELECT 'anchor_4_sb58_mahomes', pg.game_id
-                FROM pg
-                WHERE pg.game_id = '2023_22_SF_KC' AND pg.player_id = '00-0033873'
-                  AND (pg.passing_yards != 333 OR pg.rushing_yards != 66 OR pg.offense_snaps != 79 OR pg.ngs_pass_attempts != 46)
+                -- Anchor 4: Super Bowl LVIII OT (2023_22_SF_KC) + NGS SB week 23->22 join
+                SELECT 'anchor_4_sb58_mahomes', g.game_id
+                FROM g
+                LEFT JOIN pg ON g.game_id = pg.game_id AND pg.player_id = '00-0033873'
+                WHERE g.game_id = '2023_22_SF_KC'
+                  AND (
+                      pg.player_id IS NULL
+                      OR pg.passing_yards IS DISTINCT FROM 333
+                      OR pg.rushing_yards IS DISTINCT FROM 66
+                      OR pg.offense_snaps IS DISTINCT FROM 79
+                      OR pg.ngs_pass_attempts IS DISTINCT FROM 46
+                  )
                 UNION ALL
                 -- Anchor 5: 2025 snapshot depth chart strictly before kickoff
                 SELECT 'anchor_5_depth_chart_asof', g.game_id
@@ -703,31 +760,55 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                   )
                 UNION ALL
                 -- Anchor 6 & 8: 2024_13_CLE_DEN (Jameis Winston 497 yds + DEN DST 2 pick-sixes)
-                SELECT 'anchor_6_winston_497', pg.game_id
-                FROM pg
-                WHERE pg.game_id = '2024_13_CLE_DEN' AND pg.player_id = '00-0031503'
-                  AND (pg.passing_yards != 497 OR pg.passing_tds != 4 OR pg.passing_interceptions != 3 OR pg.passing_2pt_conversions != 1)
+                SELECT 'anchor_6_winston_497', g.game_id
+                FROM g
+                LEFT JOIN pg ON g.game_id = pg.game_id AND pg.player_id = '00-0031503'
+                WHERE g.game_id = '2024_13_CLE_DEN'
+                  AND (
+                      pg.player_id IS NULL
+                      OR pg.passing_yards IS DISTINCT FROM 497
+                      OR pg.passing_tds IS DISTINCT FROM 4
+                      OR pg.passing_interceptions IS DISTINCT FROM 3
+                      OR pg.passing_2pt_conversions IS DISTINCT FROM 1
+                  )
                 UNION ALL
-                SELECT 'anchor_8_den_dst', tg.game_id
-                FROM tg
-                WHERE tg.game_id = '2024_13_CLE_DEN' AND tg.team = 'DEN'
-                  AND (tg.points_scored != 41 OR tg.points_allowed != 32 OR tg.def_sacks != 3 OR tg.def_interceptions != 3 OR tg.def_tds != 2)
+                SELECT 'anchor_8_den_dst', g.game_id
+                FROM g
+                LEFT JOIN tg ON g.game_id = tg.game_id AND tg.team = 'DEN'
+                WHERE g.game_id = '2024_13_CLE_DEN'
+                  AND (
+                      tg.team IS NULL
+                      OR tg.points_scored IS DISTINCT FROM 41
+                      OR tg.points_allowed IS DISTINCT FROM 32
+                      OR tg.def_sacks IS DISTINCT FROM 3
+                      OR tg.def_interceptions IS DISTINCT FROM 3
+                      OR tg.def_tds IS DISTINCT FROM 2
+                  )
                 UNION ALL
                 -- Anchor 7: Saquon Barkley 2024_09_JAX_PHI
-                SELECT 'anchor_7_barkley_159', pg.game_id
-                FROM pg
-                WHERE pg.game_id = '2024_09_JAX_PHI' AND pg.player_id = '00-0034844'
-                  AND (pg.rushing_yards != 159 OR pg.receiving_yards != 40 OR pg.rushing_fumbles_lost != 1)
+                SELECT 'anchor_7_barkley_159', g.game_id
+                FROM g
+                LEFT JOIN pg ON g.game_id = pg.game_id AND pg.player_id = '00-0034844'
+                WHERE g.game_id = '2024_09_JAX_PHI'
+                  AND (
+                      pg.player_id IS NULL
+                      OR pg.rushing_yards IS DISTINCT FROM 159
+                      OR pg.receiving_yards IS DISTINCT FROM 40
+                      OR pg.rushing_fumbles_lost IS DISTINCT FROM 1
+                  )
                 UNION ALL
                 -- Anchor 9: Jake Moody 2024_01_NYJ_SF (2 FG in every DK distance bracket + 2 PAT)
-                SELECT 'anchor_9_moody_kicker', pg.game_id
-                FROM pg
-                WHERE pg.game_id = '2024_01_NYJ_SF' AND pg.player_id = '00-0038562'
+                SELECT 'anchor_9_moody_kicker', g.game_id
+                FROM g
+                LEFT JOIN pg ON g.game_id = pg.game_id AND pg.player_id = '00-0038562'
+                WHERE g.game_id = '2024_01_NYJ_SF'
                   AND (
-                      pg.fg_made != 6 OR pg.pat_made != 2
-                      OR (pg.fg_made_0_19 + pg.fg_made_20_29 + pg.fg_made_30_39) != 2
-                      OR pg.fg_made_40_49 != 2
-                      OR (pg.fg_made_50_59 + pg.fg_made_60_) != 2
+                      pg.player_id IS NULL
+                      OR pg.fg_made IS DISTINCT FROM 6
+                      OR pg.pat_made IS DISTINCT FROM 2
+                      OR (coalesce(pg.fg_made_0_19, 0) + coalesce(pg.fg_made_20_29, 0) + coalesce(pg.fg_made_30_39, 0)) IS DISTINCT FROM 2
+                      OR pg.fg_made_40_49 IS DISTINCT FROM 2
+                      OR (coalesce(pg.fg_made_50_59, 0) + coalesce(pg.fg_made_60_, 0)) IS DISTINCT FROM 2
                   )
             """,
         ),

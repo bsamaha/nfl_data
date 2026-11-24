@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import duckdb
 import polars as pl
 import pytest
 
+from nfl_lake.checks import build_core_checks, run_checks
 from nfl_lake.cli import main
 from nfl_lake.core import CoreBuildFailed, build_core_tables, verify_core_tables
 from nfl_lake.source import compute_file_sha256
@@ -728,6 +730,66 @@ def test_verify_core_detects_checksum_tampering_row_loss_and_missing_files(lake:
     assert missing_errors
 
 
+def test_verify_core_detects_stray_play_parquet(lake: LakeStore):
+    _populate_valid_clean_lake(lake)
+    build_core_tables(lake)
+
+    # An empty stray file does not change row count, so verify must still flag it as untracked.
+    stray_path = lake.core_dir / "play" / "play_1998.parquet"
+    pl.read_parquet(lake.core_dir / "play" / "play_2025.parquet").clear().write_parquet(stray_path)
+
+    _, errors = verify_core_tables(lake, deep=False)
+    assert errors
+
+
+def test_anchor_check_fails_when_anchor_value_is_null_or_player_row_missing(lake: LakeStore):
+    _populate_valid_clean_lake(lake)
+    build_core_tables(lake)
+
+    # Put a real anchor game_id (`2023_22_SF_KC`) into `core/game.parquet` with no matching Mahomes row in player_game:
+    # SQL `LEFT JOIN` + `IS DISTINCT FROM` must fail instead of silently passing on NULL / missing row.
+    game_path = lake.core_dir / "game.parquet"
+    games = pl.read_parquet(game_path)
+    fake_sb58 = games.head(1).with_columns(pl.lit("2023_22_SF_KC").alias("game_id"))
+    pl.concat([games, fake_sb58]).write_parquet(game_path)
+
+    connection = duckdb.connect()
+    try:
+        connection.execute("SET TimeZone = 'UTC'")
+        anchor_check = next(
+            check
+            for check in build_core_checks(lake.core_dir, lake.clean_dir)
+            if check.name == "core_anchor_games_exact"
+        )
+        report = run_checks(connection, [anchor_check])
+    finally:
+        connection.close()
+    assert not report.passed
+    assert report.errors[0].failure_count == 1
+
+    # Now add Mahomes's row with NULL offense_snaps (simulating a broken snap join): must STILL fail!
+    player_game_path = lake.core_dir / "player_game.parquet"
+    player_game = pl.read_parquet(player_game_path)
+    mahomes_null_snaps = player_game.head(1).with_columns(
+        pl.lit("2023_22_SF_KC").alias("game_id"),
+        pl.lit("00-0033873").alias("player_id"),
+        pl.lit(333, dtype=player_game.schema["passing_yards"]).alias("passing_yards"),
+        pl.lit(66, dtype=player_game.schema["rushing_yards"]).alias("rushing_yards"),
+        pl.lit(None, dtype=player_game.schema["offense_snaps"]).alias("offense_snaps"),
+        pl.lit(46, dtype=player_game.schema["ngs_pass_attempts"]).alias("ngs_pass_attempts"),
+    )
+    pl.concat([player_game, mahomes_null_snaps]).write_parquet(player_game_path)
+
+    connection = duckdb.connect()
+    try:
+        connection.execute("SET TimeZone = 'UTC'")
+        report = run_checks(connection, [anchor_check])
+    finally:
+        connection.close()
+    assert not report.passed
+    assert report.errors[0].failure_count == 1
+
+
 def test_build_core_requires_clean_inputs_and_respects_lock(lake: LakeStore):
     with pytest.raises(CoreBuildFailed):
         build_core_tables(lake)
@@ -758,7 +820,17 @@ def test_cli_build_core_exits_0_when_healthy_and_1_when_blocked(lake: LakeStore,
     assert exit_info.value.code == 1
 
 
-@pytest.mark.parametrize("bad_json", ["[]", '{"game": {}}', '{"game": {"rows": 1, "files": [], "built_at": "x"}}'])
+@pytest.mark.parametrize(
+    "bad_json",
+    [
+        "[]",
+        '{"game": {}}',
+        '{"game": {"rows": 1, "files": [], "built_at": "x"}}',
+        '{"game": {"rows": "1", "files": {"core/game.parquet": "abc"}, "built_at": "x"}}',
+        '{"game": {"rows": true, "files": {"core/game.parquet": "abc"}, "built_at": "x"}}',
+        '{"game": {"rows": 1, "files": {"../outside.parquet": "abc"}, "built_at": "x"}}',
+    ],
+)
 def test_damaged_core_state_is_refused(lake: LakeStore, bad_json: str):
     lake.manifest_dir.mkdir(parents=True, exist_ok=True)
     (lake.manifest_dir / "core_state.json").write_text(bad_json, encoding="utf-8")
