@@ -80,11 +80,14 @@ def _parse_season_filter(raw_value: str) -> set[int]:
         for token in raw_value.split(","):
             if "-" in token:
                 start_season, end_season = (int(bound) for bound in token.split("-", 1))
-                if start_season > end_season:
+                if not (1900 <= start_season <= end_season <= 2999):
                     raise ValueError
                 seasons.update(range(start_season, end_season + 1))
             elif token.strip():
-                seasons.add(int(token))
+                season = int(token)
+                if not (1900 <= season <= 2999):
+                    raise ValueError
+                seasons.add(season)
         if not seasons:
             raise ValueError
     except ValueError:
@@ -125,14 +128,14 @@ def _handle_cli_errors() -> Iterator[None]:
 
 def _cmd_update(args: argparse.Namespace) -> None:
     catalog = load_catalog(args.catalog)
-    lake = _open_lake()
-    source = _open_source(catalog, lake, dry_run=args.dry_run)
     selected_datasets = catalog.select_datasets(args.datasets, exclude_names=args.skip)
     if args.skip is not None and not selected_datasets:
         raise ValueError("--skip leaves no dataset to update")
     selected_dataset_names = (
         None if args.datasets is None and args.skip is None else [dataset.name for dataset in selected_datasets]
     )
+    lake = _open_lake()
+    source = _open_source(catalog, lake, dry_run=args.dry_run)
     summary = run_update(
         catalog,
         source,
@@ -215,11 +218,12 @@ def _cmd_verify(args: argparse.Namespace) -> None:
 def _cmd_unlock(args: argparse.Namespace) -> None:
     del args  # the catalog is not read, so a broken one cannot keep a lock in place
     lake = _open_lake()
-    if lake.lock_path.exists():
+    try:
         lake.lock_path.unlink()
-        print(f"removed {lake.lock_path}")
-    else:
+    except FileNotFoundError:
         print("no lock to remove")
+    else:
+        print(f"removed {lake.lock_path}")
 
 
 def _build_parser() -> argparse.ArgumentParser:

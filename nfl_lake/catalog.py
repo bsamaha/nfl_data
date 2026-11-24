@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 CLEAN_BUILD_VERSION = 1
 SEASON_PLACEHOLDER = "{season}"
 _DATASET_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+_REPO_PATTERN = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+_RELEASE_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class _StrictModel(BaseModel):
@@ -21,6 +23,12 @@ class _StrictModel(BaseModel):
 
 class SourceSpec(_StrictModel):
     repo: str
+
+    @model_validator(mode="after")
+    def _validate_repo(self) -> SourceSpec:
+        if not _REPO_PATTERN.fullmatch(self.repo):
+            raise ValueError("repo must have the form owner/name")
+        return self
 
 
 class DatasetSpec(_StrictModel):
@@ -38,6 +46,10 @@ class DatasetSpec(_StrictModel):
 
     @model_validator(mode="after")
     def _validate_spec_consistency(self) -> DatasetSpec:
+        if not _RELEASE_PATTERN.fullmatch(self.release) or self.release in (".", ".."):
+            raise ValueError("release must be a single release tag with no path separators or whitespace")
+        if not self.file or "/" in self.file or "\\" in self.file or self.file in (".", ".."):
+            raise ValueError("file must be a single file name with no path separators")
         is_seasonal = SEASON_PLACEHOLDER in self.file
         if self.file.count(SEASON_PLACEHOLDER) > 1:
             raise ValueError("a file pattern can contain {season} only once")
@@ -45,6 +57,8 @@ class DatasetSpec(_StrictModel):
             raise ValueError("a file pattern containing {season} needs min_season")
         if not is_seasonal and self.min_season is not None:
             raise ValueError("min_season only applies to a file pattern containing {season}")
+        if any(not col_name or col_name.strip() != col_name for col_name in self.key):
+            raise ValueError("key columns must be non-empty names with no surrounding whitespace")
         if len(set(self.key)) != len(self.key):
             raise ValueError("key lists a column twice")
         return self

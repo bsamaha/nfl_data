@@ -38,6 +38,8 @@ _CLEAN_STATE_FIELDS = frozenset(
         "built_at",
     }
 )
+# Fields status expects in a complete runs.jsonl line.
+_RUN_RECORD_FIELDS = frozenset({"run_id", "status", "finished_at", "fetched", "built", "errors"})
 
 
 class LakeLocked(RuntimeError):
@@ -96,10 +98,12 @@ class LakeStore:
         if not runs_path.exists():
             return []
         run_records = []
-        with open(runs_path, encoding="utf-8") as file_handle:
+        with open(runs_path, encoding="utf-8", errors="replace") as file_handle:
             for line in file_handle:
                 with contextlib.suppress(ValueError):
-                    run_records.append(json.loads(line))
+                    record = json.loads(line)
+                    if isinstance(record, dict) and _RUN_RECORD_FIELDS <= record.keys():
+                        run_records.append(record)
         return run_records
 
     def load_clean_state(self) -> dict[str, dict]:

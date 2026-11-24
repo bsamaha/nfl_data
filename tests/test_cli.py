@@ -110,7 +110,7 @@ def test_run_log_line_cut_short_by_a_kill_costs_only_that_line(cli, upstream, la
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
     assert command_succeeded(cli("update"))
     with open(lake.manifest_dir / "runs.jsonl", "a") as run_log:
-        run_log.write('{"run_id": "run_cut_short", "status": "o')  # the write never finished
+        run_log.write('null\n{"run_id": "incomplete"}\n{"run_id": "run_cut_short", "status": "o')
 
     assert command_succeeded(cli("update")) and command_succeeded(cli("status"))
     assert [run["fetched"] for run in lake.load_run_records()] == [1, 0]
@@ -180,6 +180,7 @@ def test_bad_arguments_are_refused(cli, upstream, lake):
         ("update", "--dry"),
         ("update", "--seasons", "last-year"),
         ("update", "--seasons", "2025-2024"),
+        ("update", "--seasons", "2020-20260"),
         ("update", "--seasons", ","),
         ("update", "--datasets", ","),
         ("update", "--skip", " "),

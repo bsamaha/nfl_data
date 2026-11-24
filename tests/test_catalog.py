@@ -4,7 +4,7 @@ import pytest
 from conftest import STATS_DATASET_SPEC, build_catalog
 from pydantic import ValidationError
 
-from nfl_lake.catalog import load_catalog
+from nfl_lake.catalog import Catalog, load_catalog
 
 SINGLE_FILE_SPEC = {"release": "r", "file": "f.parquet", "key": ["a"]}
 
@@ -23,7 +23,11 @@ def test_repo_catalog_loads_and_no_two_datasets_read_the_same_file():
         ("stats", {**SINGLE_FILE_SPEC, "min_season": 2020}),
         ("stats", {**STATS_DATASET_SPEC, "file": "stats_{season}_{season}.parquet"}),
         ("stats", {**STATS_DATASET_SPEC, "key": []}),
+        ("stats", {**STATS_DATASET_SPEC, "key": [""]}),
         ("stats", {**STATS_DATASET_SPEC, "key": ["player_id", "player_id"]}),
+        ("stats", {**SINGLE_FILE_SPEC, "file": "../escape.parquet"}),
+        ("stats", {**SINGLE_FILE_SPEC, "file": "nested/file.parquet"}),
+        ("stats", {**SINGLE_FILE_SPEC, "release": "bad/release"}),
         ("Player_stats", STATS_DATASET_SPEC),
         ("player-stats", STATS_DATASET_SPEC),
         ("2024_stats", STATS_DATASET_SPEC),
@@ -34,7 +38,11 @@ def test_repo_catalog_loads_and_no_two_datasets_read_the_same_file():
         "min_season without a season file",
         "two season markers",
         "empty key",
+        "blank key column",
         "key column twice",
+        "parent path in file",
+        "nested path in file",
+        "slash in release",
         "upper case name",
         "hyphen in name",
         "name starts with a digit",
@@ -44,6 +52,12 @@ def test_invalid_entry_is_rejected(dataset_name, dataset_spec):
     build_catalog(stats=STATS_DATASET_SPEC, one=SINGLE_FILE_SPEC)  # the two entries the cases start from are valid
     with pytest.raises(ValidationError):
         build_catalog(**{dataset_name: dataset_spec})
+
+
+def test_invalid_repo_is_rejected():
+    for bad_repo in ("", "onlyname", "owner/repo/extra", "owner/repo?x=1"):
+        with pytest.raises(ValidationError):
+            Catalog.model_validate({"source": {"repo": bad_repo}, "datasets": {"one": SINGLE_FILE_SPEC}})
 
 
 def test_file_matching_is_exact():

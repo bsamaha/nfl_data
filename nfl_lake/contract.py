@@ -82,20 +82,21 @@ def _enforce_key_rules(raw_frame: pl.DataFrame, dataset: Dataset) -> tuple[pl.Da
 
     clean_frame = _normalize_blank_key_strings(raw_frame, key_columns)
     null_key_mask = clean_frame.select(_any_key_is_null_expr(key_columns)).to_series()
+    null_key_row_count = int(null_key_mask.sum())
     rejected_frame: pl.DataFrame | None = None
-    if null_key_mask.any():
-        rejected_frame = clean_frame.filter(null_key_mask)
+    if null_key_row_count:
         if not dataset.reject_null_keys:
             raise ContractError(
-                f"{rejected_frame.height} row(s) have a null key column ({', '.join(key_columns)}). "
+                f"{null_key_row_count} row(s) have a null key column ({', '.join(key_columns)}). "
                 "Set reject_null_keys in the catalog if such rows should be set aside."
             )
-        rejected_row_share = rejected_frame.height / raw_frame.height
+        rejected_row_share = null_key_row_count / raw_frame.height
         if rejected_row_share > dataset.max_reject_share:
             raise ContractError(
-                f"{rejected_frame.height} of {raw_frame.height} rows ({rejected_row_share:.1%}) have a null key, "
+                f"{null_key_row_count} of {raw_frame.height} rows ({rejected_row_share:.1%}) have a null key, "
                 f"above the {dataset.max_reject_share:.1%} limit"
             )
+        rejected_frame = clean_frame.filter(null_key_mask)
         clean_frame = clean_frame.filter(~null_key_mask)
 
     deduped_row_count = 0

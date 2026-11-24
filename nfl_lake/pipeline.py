@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import concurrent.futures as concurrent_futures
 import dataclasses
+import hashlib
 import logging
 import os
 import re
@@ -27,7 +28,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import polars as pl
 
@@ -126,6 +127,37 @@ class LakeStatus(NamedTuple):
     last_run: dict | None
 
 
+class TargetDiskState(NamedTuple):
+    published_files_exist: bool
+    has_stored_raw: bool
+
+
+TargetAction = Literal["skip", "rebuild_from_raw", "fetch"]
+
+
+class _HashingWriter:
+    """File wrapper that computes SHA-256 while Polars streams Parquet bytes to disk."""
+
+    def __init__(self, file_handle) -> None:
+        self._file_handle = file_handle
+        self.hasher = hashlib.sha256()
+
+    def write(self, data: bytes | memoryview) -> int:
+        self.hasher.update(data)
+        return self._file_handle.write(data)
+
+    def flush(self) -> None:
+        self._file_handle.flush()
+
+
+def _write_parquet_and_sha256(frame: pl.DataFrame, dest_path: Path) -> str:
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest_path, "wb") as file_handle:
+        writer = _HashingWriter(file_handle)
+        frame.write_parquet(writer, compression="zstd")
+    return writer.hasher.hexdigest()
+
+
 def _format_name_sample(names: list[str], limit: int = 5) -> str:
     return ", ".join(names[:limit]) + (f" and {len(names) - limit} more" if len(names) > limit else "")
 
@@ -175,6 +207,12 @@ def plan_ingest_targets(
             if season_filter and season is not None and season not in season_filter:
                 continue
             targets.append(IngestTarget(dataset, asset, season))
+    if not errors:
+        if not targets:  # a mistyped season, or an empty catalog, must not pass as success
+            errors.append("nothing to update: no upstream file matches the datasets and seasons selected")
+        elif season_filter and not any(target.season is not None for target in targets):
+            errors.append("nothing to update: no seasonal upstream file matches --seasons")
+            targets = []
     return targets, errors
 
 
@@ -193,28 +231,35 @@ def _has_stored_raw(published_entry: dict | None, lake: LakeStore) -> bool:
     )
 
 
-def _published_files_exist(published_entry: dict, lake: LakeStore) -> bool:
-    """The clean file is in place, and so is the set-aside file if rows were set aside."""
+def _probe_target_files(published_entry: dict | None, lake: LakeStore) -> TargetDiskState:
+    """Single upfront disk probe for one target so planning and build decisions stay pure."""
+    if published_entry is None:
+        return TargetDiskState(published_files_exist=False, has_stored_raw=False)
     dataset_name, filename = published_entry["dataset"], published_entry["asset"]
-    return lake.clean_file_path(dataset_name, filename).exists() and (
+    published_files_exist = lake.clean_file_path(dataset_name, filename).exists() and (
         not published_entry["rejected_rows"] or lake.rejects_file_path(dataset_name, filename).exists()
+    )
+    return TargetDiskState(
+        published_files_exist=published_files_exist,
+        has_stored_raw=_has_stored_raw(published_entry, lake),
     )
 
 
-def _needs_rebuild(target: IngestTarget, clean_state: dict[str, dict], lake: LakeStore) -> bool:
-    published = clean_state.get(target.file_id)
-    if published is None or not _published_files_exist(published, lake):
-        return True
-    if _upstream_changed(target, published) or published["contract"] != target.dataset.contract:
-        return True
-    return target.dataset.history == "all" and not _has_stored_raw(published, lake)
-
-
-def _needs_fetch(target: IngestTarget, clean_state: dict[str, dict], lake: LakeStore) -> bool:
-    if not _needs_rebuild(target, clean_state, lake):
-        return False
-    published = clean_state.get(target.file_id)
-    return published is None or _upstream_changed(target, published) or not _has_stored_raw(published, lake)
+def _decide_target_action(
+    target: IngestTarget,
+    published_entry: dict | None,
+    disk_state: TargetDiskState,
+) -> TargetAction:
+    if published_entry is None or _upstream_changed(target, published_entry):
+        return "fetch"
+    needs_rebuild = (
+        not disk_state.published_files_exist
+        or published_entry["contract"] != target.dataset.contract
+        or (target.dataset.history == "all" and not disk_state.has_stored_raw)
+    )
+    if not needs_rebuild:
+        return "skip"
+    return "rebuild_from_raw" if disk_state.has_stored_raw else "fetch"
 
 
 def _fetch_one_target(
@@ -355,6 +400,7 @@ def _build_one_target(
     target: IngestTarget,
     fetched: FetchedRawFile | None,
     previous_clean_state: dict | None,
+    disk_state: TargetDiskState,
     staging_dir: Path,
     accept_schema_change: bool,
 ) -> StagedCleanFile:
@@ -385,16 +431,12 @@ def _build_one_target(
 
     build_result = build_clean(raw_frame, target.dataset, previous_clean_state, accept_schema_change)
     staged_clean_path = staging_dir / "clean" / target.dataset.name / target.asset.filename
-    staged_clean_path.parent.mkdir(parents=True, exist_ok=True)
-    build_result.clean_frame.write_parquet(staged_clean_path, compression="zstd")
-    clean_sha256 = compute_file_sha256(staged_clean_path)
+    clean_sha256 = _write_parquet_and_sha256(build_result.clean_frame, staged_clean_path)
 
     staged_rejects_path = rejects_sha256 = None
     if build_result.rejected_frame is not None:
         staged_rejects_path = staging_dir / "rejects" / target.dataset.name / target.asset.filename
-        staged_rejects_path.parent.mkdir(parents=True, exist_ok=True)
-        build_result.rejected_frame.write_parquet(staged_rejects_path, compression="zstd")
-        rejects_sha256 = compute_file_sha256(staged_rejects_path)
+        rejects_sha256 = _write_parquet_and_sha256(build_result.rejected_frame, staged_rejects_path)
 
     # Upstream often republishes a file with the same rows and a new build time. When no row was dropped for a
     # repeated key, the clean and set-aside files hold every raw row between them, so files identical to the
@@ -406,8 +448,8 @@ def _build_one_target(
         and previous_clean_state["clean_sha256"] == clean_sha256
         and previous_clean_state.get("rejects_sha256") == rejects_sha256
         and previous_clean_state["deduped_rows"] == build_result.deduped_row_count == 0
-        and _published_files_exist(previous_clean_state, lake)
-        and (target.dataset.history != "all" or _has_stored_raw(previous_clean_state, lake))
+        and disk_state.published_files_exist
+        and (target.dataset.history != "all" or disk_state.has_stored_raw)
     ):
         for staged_path in (staged_clean_path, staged_rejects_path, staged_raw_path):
             if staged_path is not None:
@@ -440,22 +482,26 @@ def _build_one_target(
 
 def _build_staged_files(
     lake: LakeStore,
-    targets: list[IngestTarget],
+    targets_to_build: list[IngestTarget],
     fetched_by_file_id: dict[str, FetchedRawFile],
     clean_state: dict[str, dict],
+    disk_state_by_file_id: dict[str, TargetDiskState],
     staging_dir: Path,
     accept_schema_change: bool,
 ) -> list[StagedCleanFile]:
     """Phase 2: rebuild every target that changed or has a new contract into staging."""
     staged_files: list[StagedCleanFile] = []
     errors: list[str] = []
-    for target in targets:
-        fetched = fetched_by_file_id.get(target.file_id)
-        if fetched is None and not _needs_rebuild(target, clean_state, lake):
-            continue
+    for target in targets_to_build:
         try:
             staged_file = _build_one_target(
-                lake, target, fetched, clean_state.get(target.file_id), staging_dir, accept_schema_change
+                lake,
+                target,
+                fetched_by_file_id.get(target.file_id),
+                clean_state.get(target.file_id),
+                disk_state_by_file_id[target.file_id],
+                staging_dir,
+                accept_schema_change,
             )
             staged_files.append(staged_file)
             if staged_file.staged_clean_path is None:
@@ -531,20 +577,24 @@ def _execute_update(
     listing = source.list_assets()
     clean_state = lake.load_clean_state()
     targets, summary.plan_errors = plan_ingest_targets(catalog, listing, clean_state, dataset_names, season_filter)
-    if not summary.plan_errors:
-        if not targets:  # a mistyped season, or an empty catalog, must not pass as success
-            summary.plan_errors.append("nothing to update: no upstream file matches the datasets and seasons selected")
-        elif season_filter and not any(target.season is not None for target in targets):
-            summary.plan_errors.append("nothing to update: no seasonal upstream file matches --seasons")
-            targets = []
     summary.target_file_count = len(targets)
     summary.dataset_count = len({target.dataset.name for target in targets})
 
+    disk_state_by_file_id = {
+        target.file_id: _probe_target_files(clean_state.get(target.file_id), lake) for target in targets
+    }
+    action_by_file_id = {
+        target.file_id: _decide_target_action(
+            target, clean_state.get(target.file_id), disk_state_by_file_id[target.file_id]
+        )
+        for target in targets
+    }
+
     if summary.dry_run:
-        targets_to_fetch = [target for target in targets if _needs_fetch(target, clean_state, lake)]
+        targets_to_fetch = [target for target in targets if action_by_file_id[target.file_id] == "fetch"]
         summary.fetched_file_ids = sorted(target.file_id for target in targets_to_fetch)
         summary.rebuilt_file_ids = sorted(
-            target.file_id for target in targets if _needs_rebuild(target, clean_state, lake)
+            target.file_id for target in targets if action_by_file_id[target.file_id] != "skip"
         )
         summary.bytes_fetched = sum(target.asset.size_bytes for target in targets_to_fetch)
         summary.unchanged_file_count = len(targets) - len(summary.rebuilt_file_ids)
@@ -556,18 +606,25 @@ def _execute_update(
 
     errors = list(summary.plan_errors)
     for dataset_name, dataset_targets in targets_by_dataset.items():
-        dataset_to_fetch = [target for target in dataset_targets if _needs_fetch(target, clean_state, lake)]
+        dataset_to_fetch = [target for target in dataset_targets if action_by_file_id[target.file_id] == "fetch"]
+        dataset_to_build = [target for target in dataset_targets if action_by_file_id[target.file_id] != "skip"]
         dataset_staging = staging_dir / dataset_name
         rebuilt_before = len(summary.rebuilt_file_ids)
         try:
             if dataset_to_fetch:
-                dataset_targets, fetched_by_file_id = _fetch_with_rechecks(
-                    source, lake, dataset_targets, dataset_to_fetch, dataset_staging, summary, workers
+                dataset_to_build, fetched_by_file_id = _fetch_with_rechecks(
+                    source, lake, dataset_to_build, dataset_to_fetch, dataset_staging, summary, workers
                 )
             else:
                 fetched_by_file_id = {}
             staged_files = _build_staged_files(
-                lake, dataset_targets, fetched_by_file_id, clean_state, dataset_staging, accept_schema_change
+                lake,
+                dataset_to_build,
+                fetched_by_file_id,
+                clean_state,
+                disk_state_by_file_id,
+                dataset_staging,
+                accept_schema_change,
             )
             if staged_files:
                 _publish_staged_files(lake, staged_files, clean_state, summary, format_utc_iso(utc_now()))
@@ -652,6 +709,16 @@ def run_update(
     return summary
 
 
+def _verify_file_checksum(file_path: Path, expected_sha256: str, label: str, errors: list[str]) -> None:
+    try:
+        actual_sha256 = compute_file_sha256(file_path)
+    except OSError as error:
+        errors.append(f"{label} cannot be read ({type(error).__name__}); {_REPAIR_ADVICE}")
+        return
+    if actual_sha256 != expected_sha256:
+        errors.append(f"{label} no longer matches its recorded checksum; {_REPAIR_ADVICE}")
+
+
 def verify_lake(
     catalog: Catalog,
     lake: LakeStore,
@@ -696,14 +763,14 @@ def verify_lake(
                         f"{file_id}: {violations.null_key_rows} row(s) with a null key, "
                         f"{violations.duplicate_key_rows} row(s) repeating a key"
                     )
-            if deep and compute_file_sha256(clean_path) != published_entry["clean_sha256"]:
-                errors.append(f"{file_id}: clean file no longer matches its recorded checksum; {_REPAIR_ADVICE}")
+                if deep:
+                    _verify_file_checksum(clean_path, published_entry["clean_sha256"], f"{file_id}: clean file", errors)
         rejects_path = lake.rejects_file_path(dataset.name, published_entry["asset"])
         recorded_rejects_sha256 = published_entry.get("rejects_sha256")
         if (published_entry["rejected_rows"] or recorded_rejects_sha256) and not rejects_path.exists():
             errors.append(f"{file_id}: set-aside file is missing; run update to rebuild it")
-        elif deep and recorded_rejects_sha256 and compute_file_sha256(rejects_path) != recorded_rejects_sha256:
-            errors.append(f"{file_id}: set-aside file no longer matches its recorded checksum; {_REPAIR_ADVICE}")
+        elif deep and recorded_rejects_sha256:
+            _verify_file_checksum(rejects_path, recorded_rejects_sha256, f"{file_id}: set-aside file", errors)
         if deep and published_entry.get("raw_path") and not _has_stored_raw(published_entry, lake):
             errors.append(f"{file_id}: raw file {published_entry['raw_path']} is missing")
     if deep:  # a raw snapshot is named after its own checksum, so every one is checked, not only the newest
@@ -714,7 +781,14 @@ def verify_lake(
                 _, separator, named_checksum = raw_path.stem.rpartition("_")
                 if not separator or not re.fullmatch("[0-9a-f]{12}", named_checksum):
                     continue  # not a snapshot: a file the lake did not write, such as desktop.ini
-                if compute_file_sha256(raw_path)[:12] != named_checksum:
+                try:
+                    actual_prefix = compute_file_sha256(raw_path)[:12]
+                except OSError as error:
+                    errors.append(
+                        f"raw file {lake.relative_posix_path(raw_path)} cannot be read ({type(error).__name__})"
+                    )
+                    continue
+                if actual_prefix != named_checksum:
                     errors.append(
                         f"raw file {lake.relative_posix_path(raw_path)} no longer matches the checksum in its name"
                     )
@@ -729,6 +803,7 @@ def get_lake_status(catalog: Catalog, lake: LakeStore) -> LakeStatus:
     `season_span` is first-last, with a trailing * when a season inside that range is not published.
     """
     clean_state = lake.load_clean_state()
+    run_records = lake.load_run_records()
     entries_by_dataset: dict[str, list[dict]] = {}
     for entry in clean_state.values():
         entries_by_dataset.setdefault(entry["dataset"], []).append(entry)
@@ -753,5 +828,4 @@ def get_lake_status(catalog: Catalog, lake: LakeStore) -> LakeStatus:
                 latest_built_at=max((entry["built_at"] for entry in dataset_entries), default="-"),
             )
         )
-    run_records = lake.load_run_records()
     return LakeStatus(datasets=dataset_summaries, last_run=(run_records[-1] if run_records else None))

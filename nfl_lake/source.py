@@ -96,6 +96,25 @@ def compute_file_sha256(file_path: Path) -> str:
         return hashlib.file_digest(file_handle, "sha256").hexdigest()
 
 
+def _format_rate_limit_reset(reset_epoch: str | None) -> str:
+    if not reset_epoch:
+        return "later"
+    try:
+        return datetime.fromtimestamp(int(reset_epoch), UTC).strftime("%H:%M UTC")
+    except ValueError, OverflowError, OSError:
+        return "later"
+
+
+def _parse_content_length(raw_length: str | None, fallback_bytes: int) -> int:
+    if raw_length is None:
+        return fallback_bytes
+    try:
+        parsed_length = int(raw_length)
+    except ValueError:
+        return fallback_bytes
+    return parsed_length if parsed_length > 0 else fallback_bytes
+
+
 def _slim_release_payload(release_payload: dict) -> dict:
     return {
         "tag_name": release_payload["tag_name"],
@@ -205,21 +224,20 @@ class GitHubReleasesSource:
             try:
                 return urllib.request.urlopen(request, timeout=120)
             except urllib.error.HTTPError as http_error:
-                if allow_not_modified and http_error.code == 304:
-                    if http_error.fp is not None:
-                        http_error.close()
+                headers = http_error.headers or {}
+                http_code = http_error.code
+                if http_error.fp is not None:
+                    http_error.close()
+                if allow_not_modified and http_code == 304:
                     raise _NotModified from http_error
-                if http_error.code in (403, 429) and http_error.headers.get("X-RateLimit-Remaining") == "0":
-                    reset_epoch = http_error.headers.get("X-RateLimit-Reset")
-                    reset_time_utc = (
-                        datetime.fromtimestamp(int(reset_epoch), UTC).strftime("%H:%M UTC") if reset_epoch else "later"
-                    )
+                if http_code in (403, 429) and headers.get("X-RateLimit-Remaining") == "0":
+                    reset_time_utc = _format_rate_limit_reset(headers.get("X-RateLimit-Reset"))
                     raise SourceError(
                         f"GitHub API rate limit reached while {operation}. "
                         f"Retry after {reset_time_utc}, or set GITHUB_TOKEN."
                     ) from http_error
-                if http_error.code < 500:
-                    raise SourceError(f"HTTP {http_error.code} while {operation}") from http_error
+                if http_code < 500:
+                    raise SourceError(f"HTTP {http_code} while {operation}") from http_error
                 raise  # 5xx propagates into _network(), which converts it to _Transient
 
     def list_assets(self) -> UpstreamListing:
@@ -292,7 +310,7 @@ class GitHubReleasesSource:
                     output_file.write(chunk)
                     hasher.update(chunk)
                     received_bytes += len(chunk)
-            expected_bytes = int(declared_length) if declared_length else asset.size_bytes
+            expected_bytes = _parse_content_length(declared_length, asset.size_bytes)
             if received_bytes < expected_bytes:  # http.client returns a body that ended early without raising
                 raise _Transient(f"body ended after {received_bytes} of {expected_bytes} bytes")
             return FetchResult(size_bytes=received_bytes, sha256=hasher.hexdigest())
@@ -300,7 +318,13 @@ class GitHubReleasesSource:
         try:
             return self._retry_transient_errors(operation, download_once)
         except OSError as error:  # only opening or writing the destination can raise one: the network raises _Transient
+            with contextlib.suppress(OSError):
+                dest_path.unlink()
             raise SourceError(f"cannot write {dest_path}: {error}") from error
+        except SourceError:
+            with contextlib.suppress(OSError):
+                dest_path.unlink()
+            raise
 
 
 class LocalDirSource:
@@ -332,11 +356,17 @@ class LocalDirSource:
 
     def fetch(self, asset: UpstreamAsset, dest_path: Path) -> FetchResult:
         src_path = self.root_dir / asset.release_tag / asset.filename
+        dest_path = Path(dest_path)
         hasher = hashlib.sha256()
         copied_bytes = 0
-        with open(src_path, "rb") as src_handle, open(dest_path, "wb") as dest_handle:
-            while chunk := src_handle.read(DOWNLOAD_CHUNK_BYTES):
-                dest_handle.write(chunk)
-                hasher.update(chunk)
-                copied_bytes += len(chunk)
+        try:
+            with open(src_path, "rb") as src_handle, open(dest_path, "wb") as dest_handle:
+                while chunk := src_handle.read(DOWNLOAD_CHUNK_BYTES):
+                    dest_handle.write(chunk)
+                    hasher.update(chunk)
+                    copied_bytes += len(chunk)
+        except OSError as error:
+            with contextlib.suppress(OSError):
+                dest_path.unlink()
+            raise SourceError(f"cannot copy {src_path} to {dest_path}: {error}") from error
         return FetchResult(size_bytes=copied_bytes, sha256=hasher.hexdigest())
