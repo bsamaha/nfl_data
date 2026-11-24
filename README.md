@@ -8,13 +8,13 @@ The rebuild steps, in order:
 
 1. Source inventory (done): `docs/SOURCE_INVENTORY.md`.
 2. Clean project (done).
-3. Ingest (done): the `nfl_lake` package described below.
-4. Core tables (proposed in `docs/SOURCE_INVENTORY.md`).
+3. Ingest (done): `python -m nfl_lake update` publishes a checked copy of each upstream file into `data/clean/`.
+4. Core tables (done): `python -m nfl_lake build-core` builds the 7 normalized core tables into `data/core/` behind Strategy 1 publish-time checks (`docs/DATA_VERIFICATION.md`).
 5. Features.
 6. First projection.
 7. Rebuild the app.
 
-What works today is ingest: fetching the nflverse files and publishing a checked copy of each. `catalog/draftkings.yml` holds DraftKings scoring and lineup rules that no code reads yet.
+What works today is ingest (`data/clean/`) and core tables (`data/core/`). `catalog/draftkings.yml` holds DraftKings scoring and lineup rules that no code reads yet.
 
 ## Install and test
 
@@ -44,13 +44,14 @@ The first run downloads every file in the catalog, about 600 MB as of November 2
 | `update --seasons 2015-2026` | Limit seasonal datasets to these seasons (`2026`, a range, or `2024,2026`) |
 | `update --datasets pbp,schedules` | Limit the run to these datasets |
 | `update --skip weekly_rosters` | Leave datasets out, e.g. to skip one that is broken upstream for a clean exit 0 |
-| `status` | What is published per dataset, and how the last run ended |
-| `verify` | Re-check every published file against its key; `--deep` also re-hashes clean files, set-aside files and every raw snapshot |
-| `unlock` | Clear the lock left by an update that was killed |
+| `build-core` | Build the 7 normalized core tables into `data/core/`, gated by Strategy 1 publish-time checks |
+| `status` | What is published per clean dataset and core table, and how the last run ended |
+| `verify` | Re-check every published clean file and (when built) core table against keys and Strategy 1 checks; `--deep` also re-hashes every clean, set-aside, raw snapshot, and core file |
+| `unlock` | Clear the lock left by an update or core build that was killed |
 
-`update` and `verify` exit non-zero when they find a problem, and also when they find nothing to work on: a selection that matches no upstream file, or a lake with nothing published. `status` only reports: it exits 0 even when the last run failed. `--help` on any command lists its options.
+`update`, `build-core` and `verify` exit non-zero when they find a problem, and `update`/`verify` also exit non-zero when they find nothing to work on: a selection that matches no upstream file, or a lake with nothing published. `status` only reports: it exits 0 even when the last run failed. `--help` on any command lists its options.
 
-When `verify` reports a damaged clean or set-aside file, delete that file and run `update` to rebuild it; `update` alone leaves a published file as it is while its upstream copy has not changed. A damaged raw snapshot can only be deleted. If it was the newest, `update` fetches the current upstream file again.
+When `verify` reports a damaged clean or set-aside file, delete that file and run `update` to rebuild it; `update` alone leaves a published file as it is while its upstream copy has not changed. A damaged raw snapshot can only be deleted. If it was the newest, `update` fetches the current upstream file again. When `verify` reports a damaged core file, run `build-core` to rebuild the core layer.
 
 ### What a run guarantees
 
@@ -68,32 +69,41 @@ Everything is under `data/`, which git ignores. Set `NFL_LAKE_ROOT` to put it el
 | Folder | Contents |
 |---|---|
 | `data/raw/<dataset>/<file stem>/` | Raw snapshots for `history: all` datasets, named by upstream update time and checksum |
-| `data/clean/<dataset>/<file name>` | The newest version of each file with its contract applied. Query this. |
+| `data/clean/<dataset>/<file name>` | The newest version of each upstream file with its key contract applied |
 | `data/rejects/<dataset>/<file name>` | Rows set aside because their key was null, such as stat rows with no player |
+| `data/core/` | Normalized, joined core tables (`game`, `team_game`, `player`, `player_game`, `play/play_<season>`, `player_week_status`, `depth_chart_snapshot`). Query this for modeling. |
 | `data/manifest/clean_state.json` | Which upstream file, checksums and contract rules each clean file was built from |
+| `data/manifest/core_state.json` | Row counts and SHA-256 checksums for every published core table |
 | `data/manifest/listing_cache.json` | The last GitHub release listing, so that an unchanged one is not downloaded again |
-| `data/manifest/runs.jsonl` | One line per run: status, errors, counts |
+| `data/manifest/runs.jsonl` | One line per update run: status, errors, counts |
 
 Datasets marked `history: all` in `catalog/datasets.yml` keep a raw snapshot of every upstream version whose rows differ from the one before; the rest keep only the clean file. A download is kept only when its dataset publishes, so a dataset that fails fetches its files again next time, and a changed rule on a dataset with no raw snapshot fetches its files again to rebuild them.
 
+### Core tables
+
+```
+uv run python -m nfl_lake build-core
+```
+
+`build-core` builds all 7 normalized tables into `data/_staging/` first, runs the Strategy 1 DuckDB checkbook suite (primary keys, zero join fan-out, 32 current team codes, UTC kickoffs, cross-source boxscore and play-by-play identities for 2016+, stat bounds, and pinned real NFL anchor games), and publishes into `data/core/` only if zero hard (`error`) checks fail. Soft (`warn`) checks (such as in-season FTN/PFR charting lag) are printed without blocking the build. If any `error` check fails, nothing is published and the previous `data/core/` layer is untouched.
+
 ### Querying
 
-DuckDB runs in-process and reads the clean files directly:
+DuckDB runs in-process and reads both `data/clean/` and `data/core/` directly:
 
 ```python
 import duckdb
 
 print(
     duckdb.sql("""
-    SELECT s.season, g.game_type, count(*) AS player_games
-    FROM read_parquet('data/clean/stats_player_week/*.parquet') s
-    JOIN read_parquet('data/clean/schedules/games.parquet') g USING (game_id)
+    SELECT season, game_type, count(*) AS player_games
+    FROM read_parquet('data/core/player_game.parquet')
     GROUP BY 1, 2 ORDER BY 1, 2
 """).fetchall()
 )
 ```
 
-Join games on `game_id`, not on team codes; `docs/SOURCE_INVENTORY.md` explains why.
+In `data/core/`, every team column uses the 32 current NFL team codes (`LV`, `LAC`, `LA`), `game.kickoff_utc` is UTC, `team_game.favored_by` is positive when that team is favored, and `player_game` already includes snaps, Next Gen Stats (with Super Bowl week offsets fixed), and PFR advanced stats. If querying `data/clean/` directly, join games on `game_id`, not on team codes; `docs/SOURCE_INVENTORY.md` explains why.
 
 ### The catalog
 

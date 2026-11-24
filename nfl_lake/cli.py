@@ -14,6 +14,8 @@ from typing import NoReturn
 import yaml
 
 from .catalog import Catalog, load_catalog
+from .checks import format_check_outcome
+from .core import CORE_TABLE_NAMES, CoreBuildFailed, build_core_tables, verify_core_tables
 from .pipeline import UpdateFailed, get_lake_status, run_update, verify_lake
 from .source import GitHubReleasesSource, LocalDirSource, SourceError, UpstreamSource
 from .store import LakeLocked, LakeStore
@@ -122,6 +124,8 @@ def _handle_cli_errors() -> Iterator[None]:
         else:
             publish_outcome = "nothing was published; the clean layer is unchanged"
         _exit_with_errors(error.errors + [publish_outcome])
+    except CoreBuildFailed as error:
+        _exit_with_errors(error.errors + ["nothing was published; the core layer is unchanged"])
     except (LakeLocked, SourceError, ValueError, OSError, yaml.YAMLError) as error:
         _exit_with_errors([str(error)])
 
@@ -204,15 +208,43 @@ def _cmd_status(args: argparse.Namespace) -> None:
         )
         for error_message in last_run["errors"]:
             print(f"  ERROR {error_message}")
+    core_state = lake.load_core_state()
+    if core_state:
+        print()
+        print(f"{'core table':<22}{'files':>6}{'rows':>12}  built")
+        for table_name in CORE_TABLE_NAMES:
+            entry = core_state.get(table_name)
+            if entry is None:
+                print(f"{table_name:<22}{0:>6}{0:>12}  (missing)")
+            else:
+                print(f"{table_name:<22}{len(entry['files']):>6}{entry['rows']:>12,}  {entry['built_at']}")
+
+
+def _cmd_build_core(args: argparse.Namespace) -> None:
+    del args
+    lake = _open_lake()
+    summary = build_core_tables(lake)
+    print(f"{summary.run_id}: ok")
+    for table_name, row_count in summary.row_counts_by_table.items():
+        print(f"  core/{table_name:<22}{row_count:>11,} rows")
+    print(f"  checks: {len(summary.report.outcomes)} run, 0 errors, {len(summary.report.warnings)} warning(s)")
+    for warning in summary.report.warnings:
+        print(f"  WARN {format_check_outcome(warning)}")
 
 
 def _cmd_verify(args: argparse.Namespace) -> None:
     catalog = load_catalog(args.catalog)
     lake = _open_lake()
     verification = verify_lake(catalog, lake, args.datasets, args.deep)
-    if verification.errors:
-        _exit_with_errors(verification.errors)
-    print(f"verified {verification.checked_file_count} file(s): ok")
+    errors = list(verification.errors)
+    checked_file_count = verification.checked_file_count
+    if args.datasets is None and not errors:
+        core_checked_count, core_errors = verify_core_tables(lake, deep=args.deep)
+        checked_file_count += core_checked_count
+        errors.extend(core_errors)
+    if errors:
+        _exit_with_errors(errors)
+    print(f"verified {checked_file_count} file(s): ok")
 
 
 def _cmd_unlock(args: argparse.Namespace) -> None:
@@ -273,16 +305,28 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     update_parser.add_argument("--workers", type=_parse_workers, default=8, help="Parallel downloads (1-16).")
 
-    add_command("status", _cmd_status, "Show what is published per dataset, and how the last run ended.")
+    add_command(
+        "build-core",
+        _cmd_build_core,
+        "Build the 7 normalized core tables into data/core/ behind Strategy 1 checks.",
+    )
+
+    add_command(
+        "status", _cmd_status, "Show what is published per dataset (and core table), and how the last run ended."
+    )
 
     verify_parser = add_command(
-        "verify", _cmd_verify, "Re-check every published file: present, expected row count, key unique and non-null."
+        "verify",
+        _cmd_verify,
+        "Re-check every published clean file and (when built) core table: present, row count, keys, and Strategy 1 checks.",
     )
     verify_parser.add_argument(
         "--datasets", type=_parse_dataset_names, help="Comma-separated dataset names. Default: every dataset."
     )
     verify_parser.add_argument(
-        "--deep", action="store_true", help="Also re-hash every clean file, set-aside file and raw snapshot."
+        "--deep",
+        action="store_true",
+        help="Also re-hash every clean file, set-aside file, raw snapshot, and published core file.",
     )
 
     add_command(

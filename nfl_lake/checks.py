@@ -1,0 +1,775 @@
+"""Reusable Strategy 1 publish-time checkbook runner and Stage 3 / Stage 4 rules.
+
+Every check is a DuckDB SQL query that returns failing rows (0 rows = pass). Hard rules (`error`) block
+publishing; soft rules (`warn`) report anomalies without blocking the build. Rules and thresholds come from
+`docs/DATA_VERIFICATION.md`, measured on the full 1999-2026 nflverse lake.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+import duckdb
+
+CheckSeverity = Literal["error", "warn"]
+
+CURRENT_TEAM_CODES = (
+    "ARI",
+    "ATL",
+    "BAL",
+    "BUF",
+    "CAR",
+    "CHI",
+    "CIN",
+    "CLE",
+    "DAL",
+    "DEN",
+    "DET",
+    "GB",
+    "HOU",
+    "IND",
+    "JAX",
+    "KC",
+    "LA",
+    "LAC",
+    "LV",
+    "MIA",
+    "MIN",
+    "NE",
+    "NO",
+    "NYG",
+    "NYJ",
+    "PHI",
+    "PIT",
+    "SEA",
+    "SF",
+    "TB",
+    "TEN",
+    "WAS",
+)
+_TEAM_SQL_LIST = ", ".join(f"'{code}'" for code in CURRENT_TEAM_CODES)
+_HISTORICAL_PLAYLESS_GAMES = "'1999_01_BAL_STL', '2000_03_SD_KC', '2000_06_BUF_MIA'"
+
+
+@dataclass(frozen=True)
+class DataCheck:
+    name: str
+    severity: CheckSeverity
+    description: str
+    query: str  # SQL query returning failing rows; 0 rows means the check passed.
+
+
+@dataclass(frozen=True)
+class CheckOutcome:
+    name: str
+    severity: CheckSeverity
+    description: str
+    failure_count: int
+    columns: list[str]
+    sample_rows: list[tuple]
+
+
+@dataclass(frozen=True)
+class CheckReport:
+    outcomes: list[CheckOutcome]
+
+    @property
+    def errors(self) -> list[CheckOutcome]:
+        return [outcome for outcome in self.outcomes if outcome.severity == "error" and outcome.failure_count > 0]
+
+    @property
+    def warnings(self) -> list[CheckOutcome]:
+        return [outcome for outcome in self.outcomes if outcome.severity == "warn" and outcome.failure_count > 0]
+
+    @property
+    def passed(self) -> bool:
+        return not self.errors
+
+
+def _sql_path(path: Path) -> str:
+    return path.as_posix().replace("'", "''")
+
+
+def run_checks(
+    connection: duckdb.DuckDBPyConnection,
+    checks: Sequence[DataCheck],
+    *,
+    sample_limit: int = 5,
+) -> CheckReport:
+    """Execute every check query and capture failing row counts plus up to `sample_limit` sample rows."""
+    outcomes: list[CheckOutcome] = []
+    for check in checks:
+        relation = connection.sql(check.query)
+        failing_rows = relation.fetchall()
+        columns = list(relation.columns)
+        outcomes.append(
+            CheckOutcome(
+                name=check.name,
+                severity=check.severity,
+                description=check.description,
+                failure_count=len(failing_rows),
+                columns=columns,
+                sample_rows=failing_rows[:sample_limit],
+            )
+        )
+    return CheckReport(outcomes=outcomes)
+
+
+def format_check_outcome(outcome: CheckOutcome) -> str:
+    """Format one failing or warning CheckOutcome with its sample rows."""
+    samples = "; ".join(
+        ", ".join(f"{col}={val!r}" for col, val in zip(outcome.columns, row, strict=True))
+        for row in outcome.sample_rows
+    )
+    return f"{outcome.name} ({outcome.failure_count} failing): {outcome.description} [{samples}]"
+
+
+def build_clean_health_checks(clean_dir: Path) -> list[DataCheck]:
+    """Stage 3 cross-dataset health checks across `data/clean/`."""
+    sched = _sql_path(clean_dir / "schedules" / "games.parquet")
+    pbp = _sql_path(clean_dir / "pbp" / "*.parquet")
+    player_stats = _sql_path(clean_dir / "stats_player_week" / "*.parquet")
+    team_stats = _sql_path(clean_dir / "stats_team_week" / "*.parquet")
+    snaps = _sql_path(clean_dir / "snap_counts" / "*.parquet")
+    participation = _sql_path(clean_dir / "pbp_participation" / "*.parquet")
+    ftn = _sql_path(clean_dir / "ftn_charting" / "*.parquet")
+    pfr_pass = _sql_path(clean_dir / "pfr_week_pass" / "*.parquet")
+
+    checks = [
+        DataCheck(
+            name="clean_reg_game_counts",
+            severity="error",
+            description="Completed seasons match expected NFL regular-season game counts (248 / 256 / 272; 271 in 2022)",
+            query=f"""
+                WITH season_counts AS (
+                    SELECT season,
+                           count(*) FILTER (WHERE game_type = 'REG') AS reg_total,
+                           count(*) FILTER (WHERE game_type = 'REG' AND home_score IS NOT NULL) AS reg_played,
+                           max(season) OVER () AS latest_season
+                    FROM read_parquet('{sched}')
+                    GROUP BY season
+                )
+                SELECT season, reg_played, reg_total
+                FROM season_counts
+                WHERE season < latest_season
+                  AND (
+                      reg_played != reg_total
+                      OR reg_total != CASE
+                          WHEN season <= 2001 THEN 248
+                          WHEN season <= 2020 THEN 256
+                          WHEN season = 2022 THEN 271
+                          ELSE 272
+                      END
+                  )
+            """,
+        ),
+        DataCheck(
+            name="clean_no_orphan_game_ids",
+            severity="error",
+            description="Every game_id in pbp, stats_player_week, stats_team_week, and snap_counts exists in schedules",
+            query=f"""
+                WITH all_game_ids AS (
+                    SELECT 'pbp' AS source, game_id FROM read_parquet('{pbp}')
+                    UNION
+                    SELECT 'stats_player_week' AS source, game_id FROM read_parquet('{player_stats}')
+                    UNION
+                    SELECT 'stats_team_week' AS source, game_id FROM read_parquet('{team_stats}')
+                    UNION
+                    SELECT 'snap_counts' AS source, game_id FROM read_parquet('{snaps}')
+                )
+                SELECT all_game_ids.source, all_game_ids.game_id
+                FROM all_game_ids
+                LEFT JOIN read_parquet('{sched}') g USING (game_id)
+                WHERE g.game_id IS NULL
+            """,
+        ),
+        DataCheck(
+            name="clean_played_games_in_core_feeds",
+            severity="error",
+            description="Every played game in schedules appears in pbp, stats_player_week, stats_team_week, and snap_counts (2013+)",
+            query=f"""
+                WITH played AS (
+                    SELECT game_id, season
+                    FROM read_parquet('{sched}')
+                    WHERE home_score IS NOT NULL
+                ),
+                pbp_games AS (SELECT DISTINCT game_id FROM read_parquet('{pbp}')),
+                player_games AS (SELECT DISTINCT game_id FROM read_parquet('{player_stats}')),
+                team_games AS (SELECT DISTINCT game_id FROM read_parquet('{team_stats}')),
+                snap_games AS (SELECT DISTINCT game_id FROM read_parquet('{snaps}'))
+                SELECT 'pbp' AS missing_from, p.game_id
+                FROM played p LEFT JOIN pbp_games x USING (game_id)
+                WHERE x.game_id IS NULL AND p.game_id NOT IN ({_HISTORICAL_PLAYLESS_GAMES})
+                UNION ALL
+                SELECT 'stats_player_week', p.game_id
+                FROM played p LEFT JOIN player_games x USING (game_id)
+                WHERE x.game_id IS NULL AND p.game_id NOT IN ({_HISTORICAL_PLAYLESS_GAMES})
+                UNION ALL
+                SELECT 'stats_team_week', p.game_id
+                FROM played p LEFT JOIN team_games x USING (game_id)
+                WHERE x.game_id IS NULL AND p.game_id NOT IN ({_HISTORICAL_PLAYLESS_GAMES})
+                UNION ALL
+                SELECT 'snap_counts', p.game_id
+                FROM played p LEFT JOIN snap_games x USING (game_id)
+                WHERE p.season >= 2013 AND x.game_id IS NULL
+            """,
+        ),
+    ]
+
+    if any((clean_dir / "pbp_participation").glob("*.parquet")):
+        checks.append(
+            DataCheck(
+                name="clean_participation_no_orphan_game_ids",
+                severity="error",
+                description="Every nflverse_game_id in pbp_participation exists in schedules",
+                query=f"""
+                    SELECT DISTINCT src.nflverse_game_id AS game_id
+                    FROM read_parquet('{participation}', union_by_name=true) src
+                    LEFT JOIN read_parquet('{sched}') g ON src.nflverse_game_id = g.game_id
+                    WHERE g.game_id IS NULL
+                """,
+            )
+        )
+
+    if any((clean_dir / "ftn_charting").glob("*.parquet")):
+        checks.append(
+            DataCheck(
+                name="clean_ftn_in_season_lag",
+                severity="warn",
+                description="Played games since 2022 not yet charted in ftn_charting",
+                query=f"""
+                    SELECT g.game_id, g.season, g.week
+                    FROM read_parquet('{sched}') g
+                    LEFT JOIN (SELECT DISTINCT nflverse_game_id AS game_id FROM read_parquet('{ftn}')) f USING (game_id)
+                    WHERE g.season >= 2022 AND g.home_score IS NOT NULL AND f.game_id IS NULL
+                    ORDER BY g.season, g.week, g.game_id
+                """,
+            )
+        )
+
+    if any((clean_dir / "pfr_week_pass").glob("*.parquet")):
+        checks.append(
+            DataCheck(
+                name="clean_pfr_in_season_lag",
+                severity="warn",
+                description="Played games since 2018 not yet published in pfr_week_pass",
+                query=f"""
+                    SELECT g.game_id, g.season, g.week
+                    FROM read_parquet('{sched}') g
+                    LEFT JOIN (SELECT DISTINCT game_id FROM read_parquet('{pfr_pass}')) p USING (game_id)
+                    WHERE g.season >= 2018 AND g.home_score IS NOT NULL AND p.game_id IS NULL
+                    ORDER BY g.season, g.week, g.game_id
+                """,
+            )
+        )
+
+    return checks
+
+
+def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int = 2016) -> list[DataCheck]:
+    """Stage 4 publish-time Strategy 1 checkbook rules against staged or published `core/` tables."""
+    game = _sql_path(core_dir / "game.parquet")
+    team_game = _sql_path(core_dir / "team_game.parquet")
+    player = _sql_path(core_dir / "player.parquet")
+    player_game = _sql_path(core_dir / "player_game.parquet")
+    play = _sql_path(core_dir / "play" / "*.parquet")
+    status = _sql_path(core_dir / "player_week_status.parquet")
+    depth = _sql_path(core_dir / "depth_chart_snapshot.parquet")
+
+    clean_pbp = _sql_path(clean_dir / "pbp" / "*.parquet")
+    clean_player_stats = _sql_path(clean_dir / "stats_player_week" / "*.parquet")
+    clean_snaps = _sql_path(clean_dir / "snap_counts" / "*.parquet")
+    clean_ngs_pass = _sql_path(clean_dir / "ngs_passing" / "ngs_passing.parquet")
+    clean_ngs_rush = _sql_path(clean_dir / "ngs_rushing" / "ngs_rushing.parquet")
+    clean_ngs_rec = _sql_path(clean_dir / "ngs_receiving" / "ngs_receiving.parquet")
+
+    checks = [
+        # 1. Table shape & join safety ---------------------------------------------------------------
+        DataCheck(
+            name="core_keys_unique",
+            severity="error",
+            description="Primary keys are unique and non-null on all 7 core tables",
+            query=f"""
+                SELECT 'game' AS table_name, count(*) - count(DISTINCT game_id) AS dups,
+                       count(*) FILTER (WHERE game_id IS NULL) AS nulls
+                FROM read_parquet('{game}')
+                HAVING dups > 0 OR nulls > 0
+                UNION ALL
+                SELECT 'team_game', count(*) - count(DISTINCT (game_id, team)),
+                       count(*) FILTER (WHERE game_id IS NULL OR team IS NULL)
+                FROM read_parquet('{team_game}')
+                HAVING count(*) - count(DISTINCT (game_id, team)) > 0
+                    OR count(*) FILTER (WHERE game_id IS NULL OR team IS NULL) > 0
+                UNION ALL
+                SELECT 'player', count(*) - count(DISTINCT gsis_id),
+                       count(*) FILTER (WHERE gsis_id IS NULL)
+                FROM read_parquet('{player}')
+                HAVING count(*) - count(DISTINCT gsis_id) > 0
+                    OR count(*) FILTER (WHERE gsis_id IS NULL) > 0
+                UNION ALL
+                SELECT 'player_game', count(*) - count(DISTINCT (game_id, player_id)),
+                       count(*) FILTER (WHERE game_id IS NULL OR player_id IS NULL)
+                FROM read_parquet('{player_game}')
+                HAVING count(*) - count(DISTINCT (game_id, player_id)) > 0
+                    OR count(*) FILTER (WHERE game_id IS NULL OR player_id IS NULL) > 0
+                UNION ALL
+                SELECT 'play', count(*) - count(DISTINCT (game_id, play_id)),
+                       count(*) FILTER (WHERE game_id IS NULL OR play_id IS NULL)
+                FROM read_parquet('{play}')
+                HAVING count(*) - count(DISTINCT (game_id, play_id)) > 0
+                    OR count(*) FILTER (WHERE game_id IS NULL OR play_id IS NULL) > 0
+                UNION ALL
+                SELECT 'player_week_status', count(*) - count(DISTINCT (season, week, team, gsis_id)),
+                       count(*) FILTER (WHERE season IS NULL OR week IS NULL OR team IS NULL OR gsis_id IS NULL)
+                FROM read_parquet('{status}')
+                HAVING count(*) - count(DISTINCT (season, week, team, gsis_id)) > 0
+                    OR count(*) FILTER (WHERE season IS NULL OR week IS NULL OR team IS NULL OR gsis_id IS NULL) > 0
+                UNION ALL
+                SELECT 'depth_chart_snapshot', count(*) - count(DISTINCT (dt, team, pos_id, pos_rank)),
+                       count(*) FILTER (WHERE dt IS NULL OR team IS NULL OR pos_id IS NULL OR pos_rank IS NULL)
+                FROM read_parquet('{depth}')
+                HAVING count(*) - count(DISTINCT (dt, team, pos_id, pos_rank)) > 0
+                    OR count(*) FILTER (WHERE dt IS NULL OR team IS NULL OR pos_id IS NULL OR pos_rank IS NULL) > 0
+            """,
+        ),
+        DataCheck(
+            name="core_zero_join_fanout",
+            severity="error",
+            description="Core joins preserve exact source row counts (zero fan-out or accidental row drops)",
+            query=f"""
+                SELECT 'player_game' AS table_name,
+                       (SELECT count(*) FROM read_parquet('{player_game}')) AS core_rows,
+                       (SELECT count(*) FROM read_parquet('{clean_player_stats}')) AS source_rows
+                WHERE (SELECT count(*) FROM read_parquet('{player_game}'))
+                   != (SELECT count(*) FROM read_parquet('{clean_player_stats}'))
+                UNION ALL
+                SELECT 'play',
+                       (SELECT count(*) FROM read_parquet('{play}')),
+                       (SELECT count(*) FROM read_parquet('{clean_pbp}'))
+                WHERE (SELECT count(*) FROM read_parquet('{play}'))
+                   != (SELECT count(*) FROM read_parquet('{clean_pbp}'))
+                UNION ALL
+                SELECT 'team_game_strict_era',
+                       (SELECT count(*) FROM read_parquet('{team_game}') WHERE season >= {strict_min_season}),
+                       2 * (SELECT count(*) FROM read_parquet('{game}') WHERE season >= {strict_min_season} AND home_score IS NOT NULL)
+                WHERE (SELECT count(*) FROM read_parquet('{team_game}') WHERE season >= {strict_min_season})
+                   != 2 * (SELECT count(*) FROM read_parquet('{game}') WHERE season >= {strict_min_season} AND home_score IS NOT NULL)
+            """,
+        ),
+        DataCheck(
+            name="core_team_game_symmetry",
+            severity="error",
+            description=f"Every played game ({strict_min_season}+) has 1 home and 1 away team_game row with matching reciprocal opponents",
+            query=f"""
+                WITH tg AS (SELECT game_id, team, opponent, is_home FROM read_parquet('{team_game}') WHERE season >= {strict_min_season})
+                SELECT game_id, count(*) AS rows_in_game,
+                       count(*) FILTER (WHERE is_home) AS home_rows,
+                       count(*) FILTER (WHERE NOT is_home) AS away_rows
+                FROM tg
+                GROUP BY game_id
+                HAVING count(*) != 2 OR count(*) FILTER (WHERE is_home) != 1 OR count(*) FILTER (WHERE NOT is_home) != 1
+                UNION ALL
+                SELECT a.game_id, 2, 1, 1
+                FROM tg a LEFT JOIN tg b ON a.game_id = b.game_id AND a.opponent = b.team AND b.opponent = a.team
+                WHERE b.team IS NULL
+            """,
+        ),
+        DataCheck(
+            name="core_players_bridge_ids_unique",
+            severity="error",
+            description="player.pfr_id and player.espn_id are unique among non-null values (safe for 1:1 bridge joins)",
+            query=f"""
+                SELECT 'pfr_id' AS id_col, pfr_id AS id_val, count(*) AS cnt
+                FROM read_parquet('{player}')
+                WHERE pfr_id IS NOT NULL AND pfr_id != ''
+                GROUP BY pfr_id HAVING count(*) > 1
+                UNION ALL
+                SELECT 'espn_id', espn_id, count(*)
+                FROM read_parquet('{player}')
+                WHERE espn_id IS NOT NULL AND espn_id != ''
+                GROUP BY espn_id HAVING count(*) > 1
+            """,
+        ),
+        DataCheck(
+            name="core_foreign_keys_hold",
+            severity="error",
+            description=f"Every game_id in team_game/player_game/play exists in game, and every {strict_min_season}+ player_game.player_id exists in player",
+            query=f"""
+                SELECT 'team_game.game_id' AS fk, tg.game_id AS bad_key
+                FROM read_parquet('{team_game}') tg LEFT JOIN read_parquet('{game}') g USING (game_id)
+                WHERE g.game_id IS NULL
+                UNION ALL
+                SELECT 'player_game.game_id', pg.game_id
+                FROM read_parquet('{player_game}') pg LEFT JOIN read_parquet('{game}') g USING (game_id)
+                WHERE g.game_id IS NULL
+                UNION ALL
+                SELECT 'play.game_id', pl.game_id
+                FROM read_parquet('{play}') pl LEFT JOIN read_parquet('{game}') g USING (game_id)
+                WHERE g.game_id IS NULL
+                UNION ALL
+                SELECT 'player_game.player_id', pg.player_id
+                FROM read_parquet('{player_game}') pg LEFT JOIN read_parquet('{player}') p ON pg.player_id = p.gsis_id
+                WHERE pg.season >= {strict_min_season} AND p.gsis_id IS NULL
+            """,
+        ),
+        DataCheck(
+            name="core_snap_join_coverage",
+            severity="error",
+            description=f"At least 99.5% of {strict_min_season}+ skill-position snap_counts rows resolve to player.gsis_id via pfr_id",
+            query=f"""
+                WITH stats AS (
+                    SELECT count(*) AS total_rows,
+                           count(*) FILTER (WHERE p.gsis_id IS NOT NULL) AS matched_rows
+                    FROM read_parquet('{clean_snaps}') sn
+                    LEFT JOIN read_parquet('{player}') p ON NULLIF(sn.pfr_player_id, '') = NULLIF(p.pfr_id, '')
+                    WHERE sn.season >= {strict_min_season} AND sn.position IN ('QB', 'RB', 'WR', 'TE')
+                )
+                SELECT total_rows, matched_rows, round(100.0 * matched_rows / NULLIF(total_rows, 0), 3) AS match_pct
+                FROM stats
+                WHERE total_rows > 0 AND 1.0 * matched_rows / total_rows < 0.995
+            """,
+        ),
+        # 2. Standardization -------------------------------------------------------------------------
+        DataCheck(
+            name="core_only_32_current_teams",
+            severity="error",
+            description="Every non-null team column across all 7 core tables uses only the 32 current NFL team codes",
+            query=f"""
+                WITH team_vals AS (
+                    SELECT 'game.home_team' AS col_name, home_team AS team_code FROM read_parquet('{game}')
+                    UNION ALL SELECT 'game.away_team', away_team FROM read_parquet('{game}')
+                    UNION ALL SELECT 'team_game.team', team FROM read_parquet('{team_game}')
+                    UNION ALL SELECT 'team_game.opponent', opponent FROM read_parquet('{team_game}')
+                    UNION ALL SELECT 'player_game.team', team FROM read_parquet('{player_game}')
+                    UNION ALL SELECT 'player_game.opponent', opponent FROM read_parquet('{player_game}')
+                    UNION ALL SELECT 'play.home_team', home_team FROM read_parquet('{play}')
+                    UNION ALL SELECT 'play.away_team', away_team FROM read_parquet('{play}')
+                    UNION ALL SELECT 'play.posteam', posteam FROM read_parquet('{play}')
+                    UNION ALL SELECT 'play.defteam', defteam FROM read_parquet('{play}')
+                    UNION ALL SELECT 'player_week_status.team', team FROM read_parquet('{status}')
+                    UNION ALL SELECT 'depth_chart_snapshot.team', team FROM read_parquet('{depth}')
+                )
+                SELECT col_name, team_code, count(*) AS cnt
+                FROM team_vals
+                WHERE team_code IS NOT NULL AND team_code NOT IN ({_TEAM_SQL_LIST})
+                GROUP BY col_name, team_code
+            """,
+        ),
+        DataCheck(
+            name="core_kickoff_utc_valid",
+            severity="error",
+            description="From 2000 onward, game.kickoff_utc is non-null UTC and never falls in 04:00-12:59 UTC",
+            query=f"""
+                SELECT game_id, season, gameday, gametime, kickoff_utc
+                FROM read_parquet('{game}')
+                WHERE season >= 2000
+                  AND (kickoff_utc IS NULL OR extract('hour' FROM kickoff_utc AT TIME ZONE 'UTC') BETWEEN 4 AND 12)
+            """,
+        ),
+        # 3. Cross-source checkbook identities -------------------------------------------------------
+        DataCheck(
+            name="core_pass_td_equals_rec_td",
+            severity="error",
+            description="Within every (game_id, team), sum(player_game.passing_tds) equals sum(player_game.receiving_tds)",
+            query=f"""
+                SELECT game_id, team, sum(coalesce(passing_tds, 0)) AS pass_tds, sum(coalesce(receiving_tds, 0)) AS rec_tds
+                FROM read_parquet('{player_game}')
+                GROUP BY game_id, team
+                HAVING sum(coalesce(passing_tds, 0)) != sum(coalesce(receiving_tds, 0))
+            """,
+        ),
+        DataCheck(
+            name="core_player_sums_equal_team",
+            severity="error",
+            description=f"For {strict_min_season}+, sum(player_game) matches team_game across all 12 core offensive stat columns",
+            query=f"""
+                WITH p AS (
+                    SELECT game_id, team,
+                           sum(coalesce(completions, 0)) AS completions,
+                           sum(coalesce(attempts, 0)) AS attempts,
+                           sum(coalesce(passing_yards, 0)) AS passing_yards,
+                           sum(coalesce(passing_tds, 0)) AS passing_tds,
+                           sum(coalesce(passing_interceptions, 0)) AS passing_interceptions,
+                           sum(coalesce(carries, 0)) AS carries,
+                           sum(coalesce(rushing_yards, 0)) AS rushing_yards,
+                           sum(coalesce(rushing_tds, 0)) AS rushing_tds,
+                           sum(coalesce(receptions, 0)) AS receptions,
+                           sum(coalesce(targets, 0)) AS targets,
+                           sum(coalesce(receiving_yards, 0)) AS receiving_yards,
+                           sum(coalesce(receiving_tds, 0)) AS receiving_tds
+                    FROM read_parquet('{player_game}')
+                    WHERE season >= {strict_min_season}
+                    GROUP BY game_id, team
+                )
+                SELECT t.game_id, t.team,
+                       p.passing_yards - t.passing_yards AS pass_yd_diff,
+                       p.rushing_yards - t.rushing_yards AS rush_yd_diff,
+                       p.receiving_yards - t.receiving_yards AS rec_yd_diff
+                FROM read_parquet('{team_game}') t
+                LEFT JOIN p USING (game_id, team)
+                WHERE t.season >= {strict_min_season}
+                  AND (
+                      coalesce(p.completions, 0) != coalesce(t.completions, 0)
+                      OR coalesce(p.attempts, 0) != coalesce(t.attempts, 0)
+                      OR coalesce(p.passing_yards, 0) != coalesce(t.passing_yards, 0)
+                      OR coalesce(p.passing_tds, 0) != coalesce(t.passing_tds, 0)
+                      OR coalesce(p.passing_interceptions, 0) != coalesce(t.passing_interceptions, 0)
+                      OR coalesce(p.carries, 0) != coalesce(t.carries, 0)
+                      OR coalesce(p.rushing_yards, 0) != coalesce(t.rushing_yards, 0)
+                      OR coalesce(p.rushing_tds, 0) != coalesce(t.rushing_tds, 0)
+                      OR coalesce(p.receptions, 0) != coalesce(t.receptions, 0)
+                      OR coalesce(p.targets, 0) != coalesce(t.targets, 0)
+                      OR coalesce(p.receiving_yards, 0) != coalesce(t.receiving_yards, 0)
+                      OR coalesce(p.receiving_tds, 0) != coalesce(t.receiving_tds, 0)
+                  )
+            """,
+        ),
+        DataCheck(
+            name="core_team_points_equal_schedule",
+            severity="error",
+            description=f"For {strict_min_season}+, team_game scoring plays add up to game.home_score / away_score",
+            query=f"""
+                WITH calc AS (
+                    SELECT game_id, team, points_scored,
+                           6 * (coalesce(passing_tds, 0) + coalesce(rushing_tds, 0) + coalesce(def_tds, 0)
+                                + coalesce(special_teams_tds, 0) + coalesce(fumble_recovery_tds, 0))
+                           + 3 * coalesce(fg_made, 0)
+                           + 1 * coalesce(pat_made, 0)
+                           + 2 * (coalesce(rushing_2pt_conversions, 0) + coalesce(receiving_2pt_conversions, 0)
+                                  + coalesce(def_2pt_made, 0) + coalesce(def_safeties, 0)) AS derived_points
+                    FROM read_parquet('{team_game}')
+                    WHERE season >= {strict_min_season}
+                )
+                SELECT game_id, team, points_scored, derived_points
+                FROM calc
+                WHERE points_scored IS NULL OR derived_points != points_scored
+            """,
+        ),
+        DataCheck(
+            name="core_pbp_equals_team_boxscore",
+            severity="error",
+            description=f"For {strict_min_season}+, play sums (including lateral_rushing_yards) equal team_game passing/rushing yards and TDs",
+            query=f"""
+                WITH p AS (
+                    SELECT game_id, posteam AS team,
+                           sum(coalesce(passing_yards, 0)) AS pass_yds,
+                           sum(coalesce(rushing_yards, 0) + coalesce(lateral_rushing_yards, 0)) AS rush_yds,
+                           sum(coalesce(pass_touchdown, 0)) AS pass_tds,
+                           sum(coalesce(rush_touchdown, 0)) AS rush_tds
+                    FROM read_parquet('{play}')
+                    WHERE season >= {strict_min_season} AND posteam IS NOT NULL
+                    GROUP BY game_id, posteam
+                )
+                SELECT t.game_id, t.team,
+                       t.passing_yards - coalesce(p.pass_yds, 0) AS pass_yd_diff,
+                       t.rushing_yards - coalesce(p.rush_yds, 0) AS rush_yd_diff,
+                       t.passing_tds - coalesce(p.pass_tds, 0) AS pass_td_diff,
+                       t.rushing_tds - coalesce(p.rush_tds, 0) AS rush_td_diff
+                FROM read_parquet('{team_game}') t
+                LEFT JOIN p USING (game_id, team)
+                WHERE t.season >= {strict_min_season}
+                  AND (
+                      t.passing_yards != coalesce(p.pass_yds, 0)
+                      OR t.rushing_yards != coalesce(p.rush_yds, 0)
+                      OR t.passing_tds != coalesce(p.pass_tds, 0)
+                      OR t.rushing_tds != coalesce(p.rush_tds, 0)
+                  )
+            """,
+        ),
+        DataCheck(
+            name="core_targets_vs_attempts_gap",
+            severity="error",
+            description=f"For {strict_min_season}+, team_game.attempts - team_game.targets stays within [0, 15]",
+            query=f"""
+                SELECT game_id, team, attempts, targets, attempts - targets AS gap
+                FROM read_parquet('{team_game}')
+                WHERE season >= {strict_min_season} AND (attempts - targets < 0 OR attempts - targets > 15)
+            """,
+        ),
+        DataCheck(
+            name="core_snap_11_player_physics",
+            severity="error",
+            description=f"For {strict_min_season}+, sum(offense_snaps)/max(offense_snaps) per team-game stays within [10.0, 12.0]",
+            query=f"""
+                SELECT game_id, team,
+                       round(sum(offense_snaps) / NULLIF(max(offense_snaps), 0), 3) AS snap_ratio
+                FROM read_parquet('{clean_snaps}')
+                WHERE season >= {strict_min_season}
+                GROUP BY game_id, team
+                HAVING max(offense_snaps) > 0
+                   AND (sum(offense_snaps) / max(offense_snaps) < 10.0 OR sum(offense_snaps) / max(offense_snaps) > 12.0)
+            """,
+        ),
+        DataCheck(
+            name="core_snap_pct_11_player_warn",
+            severity="warn",
+            description=f"For {strict_min_season}+, sum(offense_pct) per team-game outside [10.5, 11.5] (e.g. PFR denominator quirks)",
+            query=f"""
+                SELECT game_id, team, round(sum(coalesce(offense_pct, 0)), 3) AS offense_pct_sum
+                FROM read_parquet('{clean_snaps}')
+                WHERE season >= {strict_min_season}
+                GROUP BY game_id, team
+                HAVING sum(coalesce(offense_pct, 0)) < 10.5 OR sum(coalesce(offense_pct, 0)) > 11.5
+            """,
+        ),
+        # 4. Domain sanity bounds --------------------------------------------------------------------
+        DataCheck(
+            name="core_stat_ranges_valid",
+            severity="error",
+            description=f"For {strict_min_season}+, completions <= attempts, receptions <= targets, and key stats stay within realistic NFL bounds",
+            query=f"""
+                SELECT game_id, player_id, completions, attempts, receptions, targets,
+                       passing_yards, rushing_yards, receiving_yards, offense_pct
+                FROM read_parquet('{player_game}')
+                WHERE season >= {strict_min_season}
+                  AND (
+                      completions < 0 OR attempts < 0 OR carries < 0 OR receptions < 0 OR targets < 0
+                      OR completions > attempts
+                      OR receptions > targets
+                      OR passing_yards < -50 OR passing_yards > 650
+                      OR rushing_yards < -60 OR rushing_yards > 350
+                      OR receiving_yards < -50 OR receiving_yards > 380
+                      OR (offense_pct IS NOT NULL AND (offense_pct < 0 OR offense_pct > 1))
+                  )
+            """,
+        ),
+        # 5. Pinned real anchor games (enforced whenever those games exist in the lake) --------------
+        DataCheck(
+            name="core_anchor_games_exact",
+            severity="error",
+            description="Pinned real NFL anchor games match measured ground truth (team codes, UTC kickoffs, trades, OT, snaps, NGS, depth charts)",
+            query=f"""
+                WITH g AS (SELECT * FROM read_parquet('{game}')),
+                     tg AS (SELECT * FROM read_parquet('{team_game}')),
+                     pg AS (SELECT * FROM read_parquet('{player_game}')),
+                     dc AS (SELECT * FROM read_parquet('{depth}'))
+                -- Anchor 1: 2015_01_CIN_OAK (OAK -> LV, EDT 16:25 -> 20:25Z, Derek Carr & Andy Dalton snaps)
+                SELECT 'anchor_1_2015_oak_game' AS anchor, game_id AS key_id
+                FROM g
+                WHERE game_id = '2015_01_CIN_OAK'
+                  AND (
+                      home_team != 'LV' OR away_team != 'CIN' OR home_score != 13 OR away_score != 33
+                      OR strftime(kickoff_utc AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') != '2015-09-13T20:25:00Z'
+                  )
+                UNION ALL
+                SELECT 'anchor_1_2015_oak_carr', pg.game_id
+                FROM pg
+                WHERE pg.game_id = '2015_01_CIN_OAK' AND pg.player_id = '00-0031280'
+                  AND (pg.team != 'LV' OR pg.passing_yards != 61 OR pg.offense_snaps != 23)
+                UNION ALL
+                -- Anchor 2a & 2b: EDT (17:00Z) vs EST (18:00Z) for 13:00 ET kickoffs
+                SELECT 'anchor_2a_edt_kickoff', game_id
+                FROM g
+                WHERE game_id = '2025_01_ARI_NO'
+                  AND strftime(kickoff_utc AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') != '2025-09-07T17:00:00Z'
+                UNION ALL
+                SELECT 'anchor_2b_est_kickoff', game_id
+                FROM g
+                WHERE game_id = '2025_10_BAL_MIN'
+                  AND strftime(kickoff_utc AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') != '2025-11-09T18:00:00Z'
+                UNION ALL
+                -- Anchor 3: Davante Adams 2024 trade (LV -> NYJ, snaps & stats exact)
+                SELECT 'anchor_3_adams_trade', pg.game_id
+                FROM pg
+                WHERE pg.player_id = '00-0031381' AND pg.game_id = '2024_03_CAR_LV'
+                  AND (pg.team != 'LV' OR pg.receiving_yards != 40 OR pg.offense_snaps != 61)
+                UNION ALL
+                SELECT 'anchor_3_adams_trade', pg.game_id
+                FROM pg
+                WHERE pg.player_id = '00-0031381' AND pg.game_id = '2024_15_NYJ_JAX'
+                  AND (pg.team != 'NYJ' OR pg.receiving_yards != 198 OR pg.receiving_tds != 2 OR pg.offense_snaps != 54)
+                UNION ALL
+                -- Anchor 4: Super Bowl LVIII OT (2023_22_SF_KC) + NGS SB week 23->22 join!
+                SELECT 'anchor_4_sb58_mahomes', pg.game_id
+                FROM pg
+                WHERE pg.game_id = '2023_22_SF_KC' AND pg.player_id = '00-0033873'
+                  AND (pg.passing_yards != 333 OR pg.rushing_yards != 66 OR pg.offense_snaps != 79 OR pg.ngs_pass_attempts != 46)
+                UNION ALL
+                -- Anchor 5: 2025 snapshot depth chart strictly before kickoff
+                SELECT 'anchor_5_depth_chart_asof', g.game_id
+                FROM g
+                WHERE g.game_id = '2025_10_ARI_SEA'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM dc
+                      WHERE dc.team = 'SEA' AND dc.pos_abb = 'QB' AND dc.pos_rank = 1
+                        AND dc.gsis_id = '00-0034869'
+                        AND dc.snapshot_utc = (
+                            SELECT max(dc2.snapshot_utc) FROM dc dc2
+                            WHERE dc2.team = 'SEA' AND dc2.snapshot_utc < g.kickoff_utc
+                        )
+                  )
+                UNION ALL
+                -- Anchor 6 & 8: 2024_13_CLE_DEN (Jameis Winston 497 yds + DEN DST 2 pick-sixes)
+                SELECT 'anchor_6_winston_497', pg.game_id
+                FROM pg
+                WHERE pg.game_id = '2024_13_CLE_DEN' AND pg.player_id = '00-0031503'
+                  AND (pg.passing_yards != 497 OR pg.passing_tds != 4 OR pg.passing_interceptions != 3 OR pg.passing_2pt_conversions != 1)
+                UNION ALL
+                SELECT 'anchor_8_den_dst', tg.game_id
+                FROM tg
+                WHERE tg.game_id = '2024_13_CLE_DEN' AND tg.team = 'DEN'
+                  AND (tg.points_scored != 41 OR tg.points_allowed != 32 OR tg.def_sacks != 3 OR tg.def_interceptions != 3 OR tg.def_tds != 2)
+                UNION ALL
+                -- Anchor 7: Saquon Barkley 2024_09_JAX_PHI
+                SELECT 'anchor_7_barkley_159', pg.game_id
+                FROM pg
+                WHERE pg.game_id = '2024_09_JAX_PHI' AND pg.player_id = '00-0034844'
+                  AND (pg.rushing_yards != 159 OR pg.receiving_yards != 40 OR pg.rushing_fumbles_lost != 1)
+                UNION ALL
+                -- Anchor 9: Jake Moody 2024_01_NYJ_SF (2 FG in every DK distance bracket + 2 PAT)
+                SELECT 'anchor_9_moody_kicker', pg.game_id
+                FROM pg
+                WHERE pg.game_id = '2024_01_NYJ_SF' AND pg.player_id = '00-0038562'
+                  AND (
+                      pg.fg_made != 6 OR pg.pat_made != 2
+                      OR (pg.fg_made_0_19 + pg.fg_made_20_29 + pg.fg_made_30_39) != 2
+                      OR pg.fg_made_40_49 != 2
+                      OR (pg.fg_made_50_59 + pg.fg_made_60_) != 2
+                  )
+            """,
+        ),
+    ]
+
+    # NGS weekly join completeness (only when NGS files exist)
+    if (
+        (clean_dir / "ngs_passing" / "ngs_passing.parquet").exists()
+        and (clean_dir / "ngs_rushing" / "ngs_rushing.parquet").exists()
+        and (clean_dir / "ngs_receiving" / "ngs_receiving.parquet").exists()
+    ):
+        checks.append(
+            DataCheck(
+                name="core_ngs_weekly_join_complete",
+                severity="error",
+                description="All weekly NGS rows (after SB week 22->21 / 23->22 mapping) join into player_game with 0 misses",
+                query=f"""
+                    WITH ngs_all AS (
+                        SELECT 'passing' AS kind, season,
+                               CASE WHEN season_type = 'POST' AND ((season <= 2020 AND week = 22) OR (season >= 2021 AND week = 23))
+                                    THEN week - 1 ELSE week END AS week,
+                               player_gsis_id AS player_id
+                        FROM read_parquet('{clean_ngs_pass}') WHERE week > 0
+                        UNION ALL
+                        SELECT 'rushing', season,
+                               CASE WHEN season_type = 'POST' AND ((season <= 2020 AND week = 22) OR (season >= 2021 AND week = 23))
+                                    THEN week - 1 ELSE week END,
+                               player_gsis_id
+                        FROM read_parquet('{clean_ngs_rush}') WHERE week > 0
+                        UNION ALL
+                        SELECT 'receiving', season,
+                               CASE WHEN season_type = 'POST' AND ((season <= 2020 AND week = 22) OR (season >= 2021 AND week = 23))
+                                    THEN week - 1 ELSE week END,
+                               player_gsis_id
+                        FROM read_parquet('{clean_ngs_rec}') WHERE week > 0
+                    )
+                    SELECT ngs_all.kind, ngs_all.season, ngs_all.week, ngs_all.player_id
+                    FROM ngs_all
+                    LEFT JOIN read_parquet('{player_game}') pg USING (season, week, player_id)
+                    WHERE pg.player_id IS NULL
+                """,
+            )
+        )
+
+    return checks

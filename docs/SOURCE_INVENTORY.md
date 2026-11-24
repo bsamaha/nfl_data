@@ -179,17 +179,19 @@ Seasons compared across the other sources: 2015, 2019 and 2025. In 2019 the same
 - Season type is `REG` or `POST` in most sources, and the five-value `game_type` in schedules, rosters, injuries and snap counts.
 - Kickoff comes from the schedule in Eastern time. Convert it once and use it as the cutoff for every as-of join.
 
-## Proposed core tables
+## Core tables
+
+Built into `data/core/` by `python -m nfl_lake build-core`, gated by Strategy 1 publish-time checks (`docs/DATA_VERIFICATION.md`):
 
 | Table | Key | Built from |
 |---|---|---|
-| `game` | `game_id` | Schedules: kickoff in UTC, teams in current codes, lines, rest, roof, surface |
-| `team_game` | `game_id, team` | Team stats joined to `game` for opponent, home or away, spread and total |
-| `player_game` | `game_id, player_id` | Player stats, plus snaps through `pfr_id`, plus Next Gen Stats and PFR advanced stats where present |
-| `play` | `game_id, play_id` | Play-by-play, plus FTN charting from 2022, plus participation for completed seasons |
-| `player` | `gsis_id` | Players, plus `ff_playerids` for fantasy-site IDs |
-| `player_week_status` | `season, week, team, gsis_id` | Weekly rosters from 2016 and injuries from 2009 |
-| `depth_chart_snapshot` | `dt, team, pos_id, pos_rank` | Snapshot depth charts, 2025 on, attached to games by latest snapshot before kickoff |
+| `game.parquet` | `game_id` | Schedules: kickoff in UTC (`kickoff_utc`), teams in current 32 codes, lines, rest, roof, surface |
+| `team_game.parquet` | `game_id, team` | Team stats joined to `game` for opponent, `is_home`, `points_scored`/`points_allowed`, `favored_by` (+ if team is favored), and `total_line` |
+| `player.parquet` | `gsis_id` | Players with normalized `latest_team`/`draft_team`, enriched with latest `sleeper_id` and `yahoo_id` from `weekly_rosters` |
+| `player_game.parquet` | `game_id, player_id` | Player stats, plus snaps through `pfr_id`, plus Next Gen Stats (with Super Bowl week `22→21` / `23→22` alignment), plus PFR advanced stats where present |
+| `play/play_<season>.parquet` | `game_id, play_id` | Play-by-play partitioned per season with normalized teams, plus participation (`2016+`), plus FTN charting (`2022+`) |
+| `player_week_status.parquet` | `season, week, team, gsis_id` | `FULL OUTER JOIN` of `weekly_rosters` (`2016+`) and `injuries` (`2016+`) so injury-only rows are preserved |
+| `depth_chart_snapshot.parquet` | `dt, team, pos_id, pos_rank` | Snapshot depth charts (`2025+`), parsed `snapshot_utc`, and missing `gsis_id` values rescued via `players.espn_id` |
 
 Week-based depth charts and weekly rosters before 2016 need a deduplication rule before they can be loaded. Decide whether they are worth it once the first features exist.
 

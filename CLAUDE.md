@@ -19,7 +19,7 @@ A local lake of nflverse files. `README.md` is the manual (commands, guarantees,
 
 ## Layout
 
-- `nfl_lake/`: `cli.py` (commands), `pipeline.py` (update, verify, status), `contract.py` (key rules), `source.py` (GitHub and local-folder sources), `store.py` (paths and manifest), `catalog.py` (catalog model).
+- `nfl_lake/`: `cli.py` (commands), `pipeline.py` (update, verify, status), `core.py` (Stage 4 core tables and core verification), `checks.py` (reusable Strategy 1 DuckDB checkbook runner and Stage 3/4 rules), `contract.py` (key rules), `source.py` (GitHub and local-folder sources), `store.py` (paths and manifests), `catalog.py` (catalog model).
 - `catalog/datasets.yml`: one contract per dataset. `catalog/draftkings.yml`: scoring rules that no code reads yet.
-- `docs/SOURCE_INVENTORY.md`: what each nflverse file holds, and the proposed core tables for step 4.
+- `docs/SOURCE_INVENTORY.md`: what each nflverse file holds, and the Stage 4 core tables.
 - `docs/DATA_VERIFICATION.md`: measured Strategy 1 checkbook rules, team-code/join maps, DraftKings scoring deltas, and pinned real anchor games.

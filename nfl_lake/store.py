@@ -3,11 +3,13 @@
 <root>/raw/<dataset>/<file stem>/<upstream time>_<sha12>.parquet   raw snapshots, kept only for `history: all` datasets
 <root>/clean/<dataset>/<file name>                                 latest version, contract applied
 <root>/rejects/<dataset>/<file name>                               rows set aside for a null key
+<root>/core/                                                       Stage 4 joined, normalized core tables
 <root>/manifest/clean_state.json                                   what each clean file was built from
+<root>/manifest/core_state.json                                    published core tables, row counts, and checksums
 <root>/manifest/listing_cache.json                                 cached GitHub release pages with ETags
 <root>/manifest/runs.jsonl                                         one line per update run
 <root>/_staging/<run_id>/                                          files being fetched and built; removed after the run
-<root>/.update.lock                                                present while an update runs
+<root>/.update.lock                                                present while an update or core build runs
 """
 
 from __future__ import annotations
@@ -60,6 +62,7 @@ class LakeStore:
         self.raw_dir = self.root_dir / "raw"
         self.clean_dir = self.root_dir / "clean"
         self.rejects_dir = self.root_dir / "rejects"
+        self.core_dir = self.root_dir / "core"
         self.manifest_dir = self.root_dir / "manifest"
         self.staging_dir = self.root_dir / "_staging"
         self.lock_path = self.root_dir / ".update.lock"
@@ -121,13 +124,35 @@ class LakeStore:
         return clean_state
 
     def save_clean_state(self, clean_state: dict[str, dict]) -> None:
+        self._write_json_manifest("clean_state.json", clean_state)
+
+    def load_core_state(self) -> dict[str, dict]:
+        """The record of every published core table, or {} when core tables have not been built."""
+        state_path = self.manifest_dir / "core_state.json"
+        if not state_path.exists():
+            return {}
+        try:
+            core_state = json.loads(state_path.read_text(encoding="utf-8"))
+            for table_name, entry in core_state.items():
+                if not isinstance(entry, dict) or not {"rows", "files", "built_at"} <= entry.keys():
+                    raise ValueError(f"the entry for {table_name} is incomplete")
+                if not isinstance(entry["files"], dict):
+                    raise TypeError(f"the entry for {table_name} has invalid files mapping")
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ValueError(f"{state_path} is damaged: {error}") from error
+        return core_state
+
+    def save_core_state(self, core_state: dict[str, dict]) -> None:
+        self._write_json_manifest("core_state.json", core_state)
+
+    def _write_json_manifest(self, filename: str, payload: dict) -> None:
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
-        temp_path = self.manifest_dir / "clean_state.json.tmp"
+        temp_path = self.manifest_dir / f"{filename}.tmp"
         with open(temp_path, "w", encoding="utf-8") as file_handle:
-            file_handle.write(json.dumps(clean_state, indent=1, sort_keys=True))
+            file_handle.write(json.dumps(payload, indent=1, sort_keys=True))
             file_handle.flush()
             os.fsync(file_handle.fileno())
-        os.replace(temp_path, self.manifest_dir / "clean_state.json")
+        os.replace(temp_path, self.manifest_dir / filename)
 
     # lock ----------------------------------------------------------------------------------
     def _format_lock_holder(self) -> str:
