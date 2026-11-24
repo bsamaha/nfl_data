@@ -145,13 +145,14 @@ def _cmd_update(args: argparse.Namespace) -> None:
     )
     fetched_megabytes = summary.bytes_fetched / 1e6
     if summary.dry_run:
-        print(
-            f"dry run: {summary.target_file_count} files in {summary.dataset_count} datasets; "
-            f"would fetch {len(summary.fetched_file_ids)} ({fetched_megabytes:.1f} MB) "
-            f"and rebuild {len(summary.rebuilt_file_ids)}"
-        )
-        for file_id in summary.fetched_file_ids:
-            print(f"  fetch {file_id}")
+        if summary.target_file_count or not summary.plan_errors:
+            print(
+                f"dry run: {summary.target_file_count} files in {summary.dataset_count} datasets; "
+                f"would fetch {len(summary.fetched_file_ids)} ({fetched_megabytes:.1f} MB) "
+                f"and rebuild {len(summary.rebuilt_file_ids)}"
+            )
+            for file_id in summary.fetched_file_ids:
+                print(f"  fetch {file_id}")
         if summary.plan_errors:  # a real run would do the above and then fail on these
             _exit_with_errors(summary.plan_errors)
         return

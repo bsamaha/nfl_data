@@ -31,7 +31,9 @@ _CLEAN_STATE_FIELDS = frozenset(
         "deduped_rows",
         "columns",
         "contract",
+        "clean_sha256",
         "raw_sha256",
+        "raw_size",
         "upstream_updated_at",
         "built_at",
     }

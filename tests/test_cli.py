@@ -1,6 +1,7 @@
 """The command line: exit codes and what ends up on disk. A scheduled job acts on the exit code."""
 
 import io
+import json
 from dataclasses import dataclass
 
 import polars as pl
@@ -115,21 +116,54 @@ def test_run_log_line_cut_short_by_a_kill_costs_only_that_line(cli, upstream, la
     assert [run["fetched"] for run in lake.load_run_records()] == [1, 0]
 
 
-@pytest.mark.parametrize("damaged_state", ["[]", '{"stats/a.parquet": {}}'], ids=["not entries", "an emptied entry"])
-def test_clean_state_of_the_wrong_shape_is_refused_by_every_command_that_reads_it(cli, upstream, lake, damaged_state):
+@pytest.mark.parametrize(
+    "corrupt_state",
+    [
+        lambda state_path, valid_state: state_path.write_text("[]"),
+        lambda state_path, valid_state: state_path.write_text('{"stats/a.parquet": {}}'),
+        lambda state_path, valid_state: state_path.write_text(
+            json.dumps(
+                {
+                    file_id: {
+                        field_name: field_value
+                        for field_name, field_value in entry.items()
+                        if field_name != "clean_sha256"
+                    }
+                    for file_id, entry in valid_state.items()
+                }
+            )
+        ),
+        lambda state_path, valid_state: state_path.write_text(
+            json.dumps(
+                {
+                    file_id: {
+                        field_name: field_value for field_name, field_value in entry.items() if field_name != "raw_size"
+                    }
+                    for file_id, entry in valid_state.items()
+                }
+            )
+        ),
+    ],
+    ids=["not entries", "an emptied entry", "missing clean_sha256", "missing raw_size"],
+)
+def test_clean_state_of_the_wrong_shape_is_refused_by_every_command_that_reads_it(cli, upstream, lake, corrupt_state):
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
     assert command_succeeded(cli("update"))
-    (lake.manifest_dir / "clean_state.json").write_text(damaged_state)  # valid JSON, as a slip in a hand edit leaves it
-    for command in (("status",), ("verify",), ("update", "--dry-run"), ("update",)):
+    valid_state = lake.load_clean_state()
+    corrupt_state(lake.manifest_dir / "clean_state.json", valid_state)  # valid JSON, as a slip in a hand edit leaves it
+    for command in (("status",), ("verify", "--deep"), ("update", "--dry-run"), ("update",)):
         result = cli(*command)
         assert command_refused(result), (command, result.output)
 
 
-def test_selection_that_matches_nothing_is_an_error_not_a_success(cli, upstream, lake):
+def test_selection_that_matches_nothing_is_an_error_not_a_success(make_cli, upstream, lake):
+    cli = make_cli(stats=STATS_DATASET_SPEC, games=GAMES_DATASET_SPEC)
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
+    upstream.put("schedules", "games.parquet", pl.DataFrame({"game_id": ["g1"]}))
     assert command_refused(cli("verify"))  # nothing is published yet
     for dry_run_option in ((), ("--dry-run",)):
-        assert command_refused(cli("update", "--seasons", "2062", *dry_run_option))  # upstream has no such season
+        assert command_refused(cli("update", "--seasons", "2062", *dry_run_option))  # no seasonal file matches 2062
+        assert command_refused(cli("update", "--datasets", "games", "--seasons", "2024", *dry_run_option))
     assert not lake.clean_dir.exists()
 
 

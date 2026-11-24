@@ -166,7 +166,7 @@ class GitHubReleasesSource:
         try:
             cache = json.loads(self.cache_path.read_text(encoding="utf-8"))
             for cached_page in cache.values():
-                if not isinstance(cached_page["etag"], str):
+                if not isinstance(cached_page["etag"], str) or not isinstance(cached_page["releases"], list):
                     raise TypeError
                 for release_payload in cached_page["releases"]:
                     _parse_release_assets(release_payload["tag_name"], release_payload)
@@ -248,6 +248,8 @@ class GitHubReleasesSource:
                         try:
                             with _network():
                                 payload = json.load(response)
+                            if not isinstance(payload, list):
+                                raise TypeError("expected a list of releases")
                             releases = [_slim_release_payload(release_payload) for release_payload in payload]
                         except _NOT_A_LISTING as error:  # a body cut short, or a page from something in between
                             raise _Transient(f"the reply is not a release listing ({type(error).__name__})") from error

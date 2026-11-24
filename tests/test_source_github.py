@@ -152,9 +152,10 @@ def test_listing_caches_etags_and_reuses_cached_pages_on_304(monkeypatch, tmp_pa
     dry_listing = GitHubReleasesSource("o/r", cache_path=dry_cache_path, write_cache=False).list_assets()
     assert dry_listing == first_listing and not dry_cache_path.exists()
 
-    # A cache page that lost a field is not used, and a cache that cannot be written is not written.
-    cache_path.write_text(json.dumps({requests[0].full_url: {"etag": '"etag-page-1"', "releases": [{"assets": []}]}}))
-    assert source.list_assets() == first_listing and requests[-1].get_header("If-none-match") is None
+    # A cache page that lost a field or has the wrong shape is not used, and an unwritable cache is skipped.
+    for bad_releases in ([{"assets": []}], {}):
+        cache_path.write_text(json.dumps({requests[0].full_url: {"etag": '"etag-page-1"', "releases": bad_releases}}))
+        assert source.list_assets() == first_listing and requests[-1].get_header("If-none-match") is None
     unwritable_cache_path = cache_path / "listing_cache.json"  # its folder is a file
     assert GitHubReleasesSource("o/r", cache_path=unwritable_cache_path).list_assets() == first_listing
 
@@ -232,8 +233,14 @@ def test_download_to_a_folder_that_cannot_be_written_makes_no_request(monkeypatc
 
 @pytest.mark.parametrize(
     "body",
-    [b"<html>sign in to the network</html>", b'[{"tag_name": "pbp", "assets": [{"na', b'{"message": "not a list"}'],
-    ids=["a web page", "cut short", "another shape"],
+    [
+        b"<html>sign in to the network</html>",
+        b'[{"tag_name": "pbp", "assets": [{"na',
+        b'{"message": "not a list"}',
+        b"{}",
+        b'""',
+    ],
+    ids=["a web page", "cut short", "another shape", "empty object", "empty string"],
 )
 def test_listing_reply_that_is_not_a_release_listing_is_tried_again_and_then_refused(monkeypatch, body):
     requests = stub_urlopen(monkeypatch, lambda attempt_number, request: io.BytesIO(body))

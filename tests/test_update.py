@@ -585,7 +585,17 @@ def test_verify_notices_damage_to_published_files(upstream, lake):
         assert verify_lake(catalog, lake) == (1, []) and verify_lake(catalog, lake, deep=True).errors != []
         raw_file_path.write_bytes(intact_raw_bytes)
     (raw_file_path.parent / "desktop.ini").write_text("a file the lake did not write is not a damaged snapshot")
+    (raw_file_path.parent / "abcdef012345.txt").write_text("12 hex chars with no underscore is not a snapshot")
+    stray_dir = raw_file_path.parent / "backup_abcdef012345"
+    stray_dir.mkdir()
     assert verify_lake(catalog, lake, deep=True) == (1, [])
+    stray_dir.rmdir()
+    # A hand-edited entry recording a rejects checksum with no rejects file on disk is reported as an error, not a crash.
+    clean_state_before = lake.load_clean_state()
+    lake.save_clean_state({STATS_FILE_ID: clean_state_before[STATS_FILE_ID] | {"rejects_sha256": "0" * 64}})
+    assert verify_lake(catalog, lake, deep=True).errors != []
+    lake.save_clean_state(clean_state_before)
+
     for raw_file_path in stored_raw_paths(lake):
         raw_file_path.unlink()
     assert verify_lake(catalog, lake, deep=True).errors != []  # the snapshot the clean file was built from is gone

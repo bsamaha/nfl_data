@@ -531,10 +531,14 @@ def _execute_update(
     listing = source.list_assets()
     clean_state = lake.load_clean_state()
     targets, summary.plan_errors = plan_ingest_targets(catalog, listing, clean_state, dataset_names, season_filter)
+    if not summary.plan_errors:
+        if not targets:  # a mistyped season, or an empty catalog, must not pass as success
+            summary.plan_errors.append("nothing to update: no upstream file matches the datasets and seasons selected")
+        elif season_filter and not any(target.season is not None for target in targets):
+            summary.plan_errors.append("nothing to update: no seasonal upstream file matches --seasons")
+            targets = []
     summary.target_file_count = len(targets)
     summary.dataset_count = len({target.dataset.name for target in targets})
-    if not targets and not summary.plan_errors:  # a mistyped season, or an empty catalog, must not pass as success
-        raise UpdateFailed(["nothing to update: no upstream file matches the datasets and seasons selected"])
 
     if summary.dry_run:
         targets_to_fetch = [target for target in targets if _needs_fetch(target, clean_state, lake)]
@@ -696,7 +700,7 @@ def verify_lake(
                 errors.append(f"{file_id}: clean file no longer matches its recorded checksum; {_REPAIR_ADVICE}")
         rejects_path = lake.rejects_file_path(dataset.name, published_entry["asset"])
         recorded_rejects_sha256 = published_entry.get("rejects_sha256")
-        if published_entry["rejected_rows"] and not rejects_path.exists():
+        if (published_entry["rejected_rows"] or recorded_rejects_sha256) and not rejects_path.exists():
             errors.append(f"{file_id}: set-aside file is missing; run update to rebuild it")
         elif deep and recorded_rejects_sha256 and compute_file_sha256(rejects_path) != recorded_rejects_sha256:
             errors.append(f"{file_id}: set-aside file no longer matches its recorded checksum; {_REPAIR_ADVICE}")
@@ -705,8 +709,10 @@ def verify_lake(
     if deep:  # a raw snapshot is named after its own checksum, so every one is checked, not only the newest
         for dataset_name in selected_datasets_by_name:
             for raw_path in sorted((lake.raw_dir / dataset_name).glob("*/*")):
-                named_checksum = raw_path.stem.rpartition("_")[2]
-                if not re.fullmatch("[0-9a-f]{12}", named_checksum):
+                if not raw_path.is_file():
+                    continue
+                _, separator, named_checksum = raw_path.stem.rpartition("_")
+                if not separator or not re.fullmatch("[0-9a-f]{12}", named_checksum):
                     continue  # not a snapshot: a file the lake did not write, such as desktop.ini
                 if compute_file_sha256(raw_path)[:12] != named_checksum:
                     errors.append(
