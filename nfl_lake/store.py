@@ -5,7 +5,7 @@
 <root>/rejects/<dataset>/<file name>                               rows set aside for a null key
 <root>/core/                                                       Stage 4 joined, normalized core tables
 <root>/manifest/clean_state.json                                   what each clean file was built from
-<root>/manifest/core_state.json                                    published core tables, row counts, and checksums
+<root>/manifest/core_state.json                                    the published core build: tables, checksums, clean inputs
 <root>/manifest/listing_cache.json                                 cached GitHub release pages with ETags
 <root>/manifest/runs.jsonl                                         one line per update run
 <root>/_staging/<run_id>/                                          files being fetched and built; removed after the run
@@ -21,6 +21,8 @@ import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field
 
 # What every clean_state.json entry holds, whichever version of the code wrote it.
 _CLEAN_STATE_FIELDS = frozenset(
@@ -46,6 +48,24 @@ _RUN_RECORD_FIELDS = frozenset({"run_id", "status", "finished_at", "fetched", "b
 
 class LakeLocked(RuntimeError):
     pass
+
+
+class _CoreRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+
+class CoreTableRecord(_CoreRecord):
+    rows: int = Field(ge=0)
+    files: dict[str, str]  # path under the lake folder -> SHA-256
+
+
+class CoreState(_CoreRecord):
+    """What `manifest/core_state.json` holds: one core build, what it read and what it published."""
+
+    run_id: str
+    built_at: str
+    clean_inputs: dict[str, str]  # every clean file the build read: path under the lake folder -> SHA-256
+    tables: dict[str, CoreTableRecord]
 
 
 def utc_now() -> datetime:
@@ -126,36 +146,20 @@ class LakeStore:
     def save_clean_state(self, clean_state: dict[str, dict]) -> None:
         self._write_json_manifest("clean_state.json", clean_state)
 
-    def load_core_state(self) -> dict[str, dict]:
-        """The record of every published core table, or {} when core tables have not been built."""
+    def load_core_state(self) -> CoreState | None:
+        """The record of the published core build, or None when core tables have not been built."""
         state_path = self.manifest_dir / "core_state.json"
         if not state_path.exists():
-            return {}
+            return None
         try:
-            core_state = json.loads(state_path.read_text(encoding="utf-8"))
-            if not isinstance(core_state, dict):
-                raise TypeError("top-level JSON must be an object")
-            for table_name, entry in core_state.items():
-                if not isinstance(entry, dict) or not {"rows", "files", "built_at"} <= entry.keys():
-                    raise ValueError(f"the entry for {table_name} is incomplete")
-                if not isinstance(entry["rows"], int) or isinstance(entry["rows"], bool) or entry["rows"] < 0:
-                    raise ValueError(f"the entry for {table_name} has invalid rows count")
-                if not isinstance(entry["built_at"], str):
-                    raise TypeError(f"the entry for {table_name} has invalid built_at timestamp")
-                if not isinstance(entry["files"], dict):
-                    raise TypeError(f"the entry for {table_name} has invalid files mapping")
-                for rel_path, sha_hex in entry["files"].items():
-                    if not isinstance(rel_path, str) or not isinstance(sha_hex, str):
-                        raise TypeError(f"the entry for {table_name} has invalid file checksum entry")
-                    path_parts = Path(rel_path).parts
-                    if not path_parts or path_parts[0] != "core" or ".." in path_parts or Path(rel_path).is_absolute():
-                        raise ValueError(f"the entry for {table_name} points outside core/: {rel_path}")
-        except (ValueError, TypeError, AttributeError) as error:
-            raise ValueError(f"{state_path} is damaged: {error}") from error
-        return core_state
+            return CoreState.model_validate_json(state_path.read_text(encoding="utf-8"))
+        except ValueError as error:
+            raise ValueError(
+                f"{state_path} is not a record that build-core writes; run build-core to replace it"
+            ) from error
 
-    def save_core_state(self, core_state: dict[str, dict]) -> None:
-        self._write_json_manifest("core_state.json", core_state)
+    def save_core_state(self, core_state: CoreState) -> None:
+        self._write_json_manifest("core_state.json", core_state.model_dump())
 
     def _write_json_manifest(self, filename: str, payload: dict) -> None:
         self.manifest_dir.mkdir(parents=True, exist_ok=True)

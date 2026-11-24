@@ -45,13 +45,13 @@ The first run downloads every file in the catalog, about 600 MB as of November 2
 | `update --datasets pbp,schedules` | Limit the run to these datasets |
 | `update --skip weekly_rosters` | Leave datasets out, e.g. to skip one that is broken upstream for a clean exit 0 |
 | `build-core` | Build the 7 normalized core tables into `data/core/`, gated by Strategy 1 publish-time checks |
-| `status` | What is published per clean dataset and core table, and how the last run ended |
-| `verify` | Re-check every published clean file and (when built) core table against keys and Strategy 1 checks; `--deep` also re-hashes every clean, set-aside, raw snapshot, and core file |
+| `status` | What is published per clean dataset and core table, how the last run ended, and whether the core tables are behind the clean layer |
+| `verify` | Re-check every published clean file and (when built) core table against keys and Strategy 1 checks, and report core tables built from an earlier clean layer; `--deep` also re-hashes every clean, set-aside, raw snapshot, and core file |
 | `unlock` | Clear the lock left by an update or core build that was killed |
 
 `update`, `build-core` and `verify` exit non-zero when they find a problem, and `update`/`verify` also exit non-zero when they find nothing to work on: a selection that matches no upstream file, or a lake with nothing published. `status` only reports: it exits 0 even when the last run failed. `--help` on any command lists its options.
 
-When `verify` reports a damaged clean or set-aside file, delete that file and run `update` to rebuild it; `update` alone leaves a published file as it is while its upstream copy has not changed. A damaged raw snapshot can only be deleted. If it was the newest, `update` fetches the current upstream file again. When `verify` reports a damaged core file, run `build-core` to rebuild the core layer.
+When `verify` reports a damaged clean or set-aside file, delete that file and run `update` to rebuild it; `update` alone leaves a published file as it is while its upstream copy has not changed. A damaged raw snapshot can only be deleted. If it was the newest, `update` fetches the current upstream file again. When `verify` reports a damaged core file, or core tables built from an earlier clean layer, run `build-core` to rebuild the core layer.
 
 ### What a run guarantees
 
@@ -73,7 +73,7 @@ Everything is under `data/`, which git ignores. Set `NFL_LAKE_ROOT` to put it el
 | `data/rejects/<dataset>/<file name>` | Rows set aside because their key was null, such as stat rows with no player |
 | `data/core/` | Normalized, joined core tables (`game`, `team_game`, `player`, `player_game`, `play/play_<season>`, `player_week_status`, `depth_chart_snapshot`). Query this for modeling. |
 | `data/manifest/clean_state.json` | Which upstream file, checksums and contract rules each clean file was built from |
-| `data/manifest/core_state.json` | Row counts and SHA-256 checksums for every published core table |
+| `data/manifest/core_state.json` | The published core build: row counts and SHA-256 checksums of its files, and the checksum of every clean file it was built from |
 | `data/manifest/listing_cache.json` | The last GitHub release listing, so that an unchanged one is not downloaded again |
 | `data/manifest/runs.jsonl` | One line per update run: status, errors, counts |
 
@@ -86,6 +86,11 @@ uv run python -m nfl_lake build-core
 ```
 
 `build-core` builds all 7 normalized tables into `data/_staging/` first, runs the Strategy 1 DuckDB checkbook suite (primary keys, zero join fan-out, 32 current team codes, UTC kickoffs, cross-source boxscore and play-by-play identities for 2016+, stat bounds, and pinned real NFL anchor games), and publishes into `data/core/` only if zero hard (`error`) checks fail. Soft (`warn`) checks (such as in-season FTN/PFR charting lag) are printed without blocking the build. If any `error` check fails, nothing is published and the previous `data/core/` layer is untouched.
+
+- **All seven tables or none.** Publishing swaps the staged folder in for `data/core/` as a whole. On Windows a core file that is open in another program stops the swap; the build then exits 1 and `data/core/` is as it was.
+- **A clean file the build cannot use fails it the same way.** A file that cannot be read, or that has lost a column a core table selects (as after `update --accept-schema-change`), exits 1 with the table or check that needed it.
+- **A played game must be in every feed.** The build refuses while a game with a final score is missing from play-by-play, player stats, team stats or snap counts, and `data/core/` stays at its previous build. Expect that between a final score reaching the schedule and the next update of the other files; whether and for how long it happens has not been observed.
+- **Core does not follow `update` on its own.** Run `build-core` after an `update` that changed anything. Until then `status` says the core tables are behind and `verify` exits 1.
 
 ### Querying
 
@@ -103,7 +108,11 @@ print(
 )
 ```
 
-In `data/core/`, every team column uses the 32 current NFL team codes (`LV`, `LAC`, `LA`), `game.kickoff_utc` is UTC, `team_game.favored_by` is positive when that team is favored, and `player_game` already includes snaps, Next Gen Stats (with Super Bowl week offsets fixed), and PFR advanced stats. If querying `data/clean/` directly, join games on `game_id`, not on team codes; `docs/SOURCE_INVENTORY.md` explains why.
+In `data/core/`, every team column uses the 32 current NFL team codes (`LV`, `LAC`, `LA`), `game.kickoff_utc` is UTC, `team_game.favored_by` is positive when that team is favored, and `player_game` already includes snaps, Next Gen Stats (with Super Bowl week offsets fixed), and PFR advanced stats.
+
+`player_game` has a row for every player who has a stat line or played a snap in the game. Upstream player stats leave out a player who played without recording a stat, such as a tight end who blocked all game; from 2013, the first season with snap counts, that game is here with `has_stat_line` false, 0 in every counting stat and the snaps played. An average over a player's rows therefore counts the games with nothing in them. Before 2013 a game without a stat has no row.
+
+If querying `data/clean/` directly, join games on `game_id`, not on team codes; `docs/SOURCE_INVENTORY.md` explains why.
 
 ### The catalog
 
@@ -122,17 +131,17 @@ To keep these in a file, let uv read it: `uv run --env-file .env python -m nfl_l
 
 ## Scheduling
 
-Run it once a day; a run downloads only what changed. When upstream files land is not established yet (see Open questions in `docs/SOURCE_INVENTORY.md`), so the time in the cron line is an example, not a recommendation.
+Run `update` once a day, and `build-core` after it; an update downloads only what changed. When upstream files land is not established yet (see Open questions in `docs/SOURCE_INVENTORY.md`), so the time in the cron line is an example, not a recommendation.
 
-Windows Task Scheduler: create a task whose action has Program `uv` and Arguments `run --directory C:\path\to\nfl_data python -m nfl_lake update`.
+Windows Task Scheduler: create a task whose action has Program `cmd` and Arguments `/c "uv run --directory C:\path\to\nfl_data python -m nfl_lake update && uv run --directory C:\path\to\nfl_data python -m nfl_lake build-core"`.
 
 cron:
 
 ```
-30 9 * * * uv run --directory /path/to/nfl_data python -m nfl_lake update >> "$HOME/nfl_lake_update.log" 2>&1
+30 9 * * * cd /path/to/nfl_data && (uv run python -m nfl_lake update && uv run python -m nfl_lake build-core) >> "$HOME/nfl_lake_update.log" 2>&1
 ```
 
-`uv run --directory` sets the working directory, which the command needs because it reads `catalog/` and writes `data/` relative to it. A failed run exits 1, so point the scheduler's failure alert at the exit code.
+The commands need the repo as their working directory, which `uv run --directory` and `cd` set, because they read `catalog/` and write `data/` relative to it. `build-core` runs only when `update` succeeded. Either one exits 1 on failure, so point the scheduler's failure alert at the exit code.
 
 ## Data licence
 

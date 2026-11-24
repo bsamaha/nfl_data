@@ -70,6 +70,7 @@ class CheckOutcome:
     failure_count: int
     columns: list[str]
     sample_rows: list[tuple]
+    query_error: str | None = None  # why the check could not be run, e.g. a file it reads has lost a column
 
 
 @dataclass(frozen=True)
@@ -78,11 +79,20 @@ class CheckReport:
 
     @property
     def errors(self) -> list[CheckOutcome]:
-        return [outcome for outcome in self.outcomes if outcome.severity == "error" and outcome.failure_count > 0]
+        """Hard checks that found failing rows, and checks of either severity that could not be run."""
+        return [
+            outcome
+            for outcome in self.outcomes
+            if outcome.query_error or (outcome.severity == "error" and outcome.failure_count > 0)
+        ]
 
     @property
     def warnings(self) -> list[CheckOutcome]:
-        return [outcome for outcome in self.outcomes if outcome.severity == "warn" and outcome.failure_count > 0]
+        return [
+            outcome
+            for outcome in self.outcomes
+            if not outcome.query_error and outcome.severity == "warn" and outcome.failure_count > 0
+        ]
 
     @property
     def passed(self) -> bool:
@@ -99,12 +109,20 @@ def run_checks(
     *,
     sample_limit: int = 5,
 ) -> CheckReport:
-    """Execute every check query and capture failing row counts plus up to `sample_limit` sample rows."""
+    """Execute every check query and capture failing row counts plus up to `sample_limit` sample rows.
+
+    A query that cannot be run (a file it reads is unreadable or has lost a column) is recorded on its outcome and
+    the remaining checks still run.
+    """
     outcomes: list[CheckOutcome] = []
     for check in checks:
-        relation = connection.sql(check.query)
-        failing_rows = relation.fetchall()
-        columns = list(relation.columns)
+        try:
+            relation = connection.sql(check.query)
+            failing_rows = relation.fetchall()
+            columns = list(relation.columns)
+            query_error = None
+        except duckdb.Error as error:
+            failing_rows, columns, query_error = [], [], str(error).partition("\n")[0]
         outcomes.append(
             CheckOutcome(
                 name=check.name,
@@ -113,6 +131,7 @@ def run_checks(
                 failure_count=len(failing_rows),
                 columns=columns,
                 sample_rows=failing_rows[:sample_limit],
+                query_error=query_error,
             )
         )
     return CheckReport(outcomes=outcomes)
@@ -120,6 +139,8 @@ def run_checks(
 
 def format_check_outcome(outcome: CheckOutcome) -> str:
     """Format one failing or warning CheckOutcome with its sample rows."""
+    if outcome.query_error:
+        return f"{outcome.name} could not be run: {outcome.query_error}"
     samples = "; ".join(
         ", ".join(f"{col}={val!r}" for col, val in zip(outcome.columns, row, strict=True))
         for row in outcome.sample_rows
@@ -137,6 +158,9 @@ def build_clean_health_checks(clean_dir: Path) -> list[DataCheck]:
     participation = _sql_path(clean_dir / "pbp_participation" / "*.parquet")
     ftn = _sql_path(clean_dir / "ftn_charting" / "*.parquet")
     pfr_pass = _sql_path(clean_dir / "pfr_week_pass" / "*.parquet")
+    pfr_rush = _sql_path(clean_dir / "pfr_week_rush" / "*.parquet")
+    pfr_rec = _sql_path(clean_dir / "pfr_week_rec" / "*.parquet")
+    pfr_def = _sql_path(clean_dir / "pfr_week_def" / "*.parquet")
 
     checks = [
         DataCheck(
@@ -169,7 +193,7 @@ def build_clean_health_checks(clean_dir: Path) -> list[DataCheck]:
         DataCheck(
             name="clean_no_orphan_game_ids",
             severity="error",
-            description="Every game_id in pbp, stats_player_week, stats_team_week, and snap_counts exists in schedules",
+            description="Every game_id in pbp, stats_player_week, stats_team_week, snap_counts, and pfr_week_* exists in schedules",
             query=f"""
                 WITH all_game_ids AS (
                     SELECT 'pbp' AS source, game_id FROM read_parquet('{pbp}')
@@ -179,6 +203,14 @@ def build_clean_health_checks(clean_dir: Path) -> list[DataCheck]:
                     SELECT 'stats_team_week' AS source, game_id FROM read_parquet('{team_stats}')
                     UNION
                     SELECT 'snap_counts' AS source, game_id FROM read_parquet('{snaps}')
+                    UNION
+                    SELECT 'pfr_week_pass' AS source, game_id FROM read_parquet('{pfr_pass}')
+                    UNION
+                    SELECT 'pfr_week_rush' AS source, game_id FROM read_parquet('{pfr_rush}')
+                    UNION
+                    SELECT 'pfr_week_rec' AS source, game_id FROM read_parquet('{pfr_rec}')
+                    UNION
+                    SELECT 'pfr_week_def' AS source, game_id FROM read_parquet('{pfr_def}')
                 )
                 SELECT all_game_ids.source, all_game_ids.game_id
                 FROM all_game_ids
@@ -235,6 +267,19 @@ def build_clean_health_checks(clean_dir: Path) -> list[DataCheck]:
         )
 
     if any((clean_dir / "ftn_charting").glob("*.parquet")):
+        checks.append(
+            DataCheck(
+                name="clean_ftn_no_orphan_game_ids",
+                severity="error",
+                description="Every nflverse_game_id in ftn_charting exists in schedules",
+                query=f"""
+                    SELECT DISTINCT src.nflverse_game_id AS game_id
+                    FROM read_parquet('{ftn}') src
+                    LEFT JOIN read_parquet('{sched}') g ON src.nflverse_game_id = g.game_id
+                    WHERE g.game_id IS NULL
+                """,
+            )
+        )
         checks.append(
             DataCheck(
                 name="clean_ftn_in_season_lag",
@@ -341,43 +386,45 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
         DataCheck(
             name="core_zero_join_fanout",
             severity="error",
-            description="Core joins preserve exact source row counts (zero fan-out or accidental row drops)",
+            description="Core tables hold exactly the rows of their sources (zero fan-out or accidental row drops)",
             query=f"""
-                SELECT 'game' AS table_name,
-                       (SELECT count(*) FROM read_parquet('{game}')) AS core_rows,
-                       (SELECT count(*) FROM read_parquet('{clean_schedules}')) AS source_rows
-                WHERE (SELECT count(*) FROM read_parquet('{game}'))
-                   != (SELECT count(*) FROM read_parquet('{clean_schedules}'))
-                UNION ALL
-                SELECT 'player',
-                       (SELECT count(*) FROM read_parquet('{player}')),
-                       (SELECT count(*) FROM read_parquet('{clean_players}'))
-                WHERE (SELECT count(*) FROM read_parquet('{player}'))
-                   != (SELECT count(*) FROM read_parquet('{clean_players}'))
-                UNION ALL
-                SELECT 'player_game',
-                       (SELECT count(*) FROM read_parquet('{player_game}')),
-                       (SELECT count(*) FROM read_parquet('{clean_player_stats}'))
-                WHERE (SELECT count(*) FROM read_parquet('{player_game}'))
-                   != (SELECT count(*) FROM read_parquet('{clean_player_stats}'))
-                UNION ALL
-                SELECT 'play',
-                       (SELECT count(*) FROM read_parquet('{play}')),
-                       (SELECT count(*) FROM read_parquet('{clean_pbp}'))
-                WHERE (SELECT count(*) FROM read_parquet('{play}'))
-                   != (SELECT count(*) FROM read_parquet('{clean_pbp}'))
-                UNION ALL
-                SELECT 'depth_chart_snapshot',
-                       (SELECT count(*) FROM read_parquet('{depth}')),
-                       (SELECT count(*) FROM read_parquet('{clean_depth}'))
-                WHERE (SELECT count(*) FROM read_parquet('{depth}'))
-                   != (SELECT count(*) FROM read_parquet('{clean_depth}'))
-                UNION ALL
-                SELECT 'team_game_strict_era',
-                       (SELECT count(*) FROM read_parquet('{team_game}') WHERE season >= {strict_min_season}),
-                       2 * (SELECT count(*) FROM read_parquet('{game}') WHERE season >= {strict_min_season} AND home_score IS NOT NULL)
-                WHERE (SELECT count(*) FROM read_parquet('{team_game}') WHERE season >= {strict_min_season})
-                   != 2 * (SELECT count(*) FROM read_parquet('{game}') WHERE season >= {strict_min_season} AND home_score IS NOT NULL)
+                WITH row_counts AS (
+                    SELECT 'game' AS table_name,
+                           (SELECT count(*) FROM read_parquet('{game}')) AS core_rows,
+                           (SELECT count(*) FROM read_parquet('{clean_schedules}')) AS source_rows
+                    UNION ALL
+                    SELECT 'player',
+                           (SELECT count(*) FROM read_parquet('{player}')),
+                           (SELECT count(*) FROM read_parquet('{clean_players}'))
+                    UNION ALL
+                    SELECT 'player_game_stat_lines',
+                           (SELECT count(*) FROM read_parquet('{player_game}') WHERE has_stat_line),
+                           (SELECT count(*) FROM read_parquet('{clean_player_stats}'))
+                    UNION ALL
+                    -- every stat line, plus every snap_counts row of a known player who has no stat line in that game
+                    SELECT 'player_game',
+                           (SELECT count(*) FROM read_parquet('{player_game}')),
+                           (SELECT count(*) FROM (
+                                SELECT game_id, player_id FROM read_parquet('{clean_player_stats}')
+                                UNION
+                                SELECT sn.game_id, p.gsis_id
+                                FROM read_parquet('{clean_snaps}') sn
+                                JOIN read_parquet('{player}') p ON NULLIF(sn.pfr_player_id, '') = NULLIF(p.pfr_id, '')
+                           ))
+                    UNION ALL
+                    SELECT 'play',
+                           (SELECT count(*) FROM read_parquet('{play}')),
+                           (SELECT count(*) FROM read_parquet('{clean_pbp}'))
+                    UNION ALL
+                    SELECT 'depth_chart_snapshot',
+                           (SELECT count(*) FROM read_parquet('{depth}')),
+                           (SELECT count(*) FROM read_parquet('{clean_depth}'))
+                    UNION ALL
+                    SELECT 'team_game_strict_era',
+                           (SELECT count(*) FROM read_parquet('{team_game}') WHERE season >= {strict_min_season}),
+                           2 * (SELECT count(*) FROM read_parquet('{game}') WHERE season >= {strict_min_season} AND home_score IS NOT NULL)
+                )
+                SELECT table_name, core_rows, source_rows FROM row_counts WHERE core_rows != source_rows
             """,
         ),
         DataCheck(
@@ -809,6 +856,18 @@ def build_core_checks(core_dir: Path, clean_dir: Path, *, strict_min_season: int
                       OR (coalesce(pg.fg_made_0_19, 0) + coalesce(pg.fg_made_20_29, 0) + coalesce(pg.fg_made_30_39, 0)) IS DISTINCT FROM 2
                       OR pg.fg_made_40_49 IS DISTINCT FROM 2
                       OR (coalesce(pg.fg_made_50_59, 0) + coalesce(pg.fg_made_60_, 0)) IS DISTINCT FROM 2
+                  )
+                UNION ALL
+                -- Anchor 10: Cade Otton 2025_03_NYJ_TB (66 snaps, no target: a row that only snap_counts supplies)
+                SELECT 'anchor_10_otton_snaps_without_a_stat', g.game_id
+                FROM g
+                LEFT JOIN pg ON g.game_id = pg.game_id AND pg.player_id = '00-0038129'
+                WHERE g.game_id = '2025_03_NYJ_TB'
+                  AND (
+                      pg.player_id IS NULL
+                      OR pg.team IS DISTINCT FROM 'TB'
+                      OR pg.offense_snaps IS DISTINCT FROM 66
+                      OR pg.targets IS DISTINCT FROM 0
                   )
             """,
         ),

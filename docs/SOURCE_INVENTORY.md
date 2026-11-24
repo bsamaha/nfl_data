@@ -59,7 +59,8 @@ All URLs have the form `https://github.com/nflverse/nflverse-data/releases/downl
 
 ### Player stats, weekly
 
-- **Grain:** one row per player per game, all positions including defense and kickers. 150 columns, identical in every season.
+- **Grain:** one row per player per game in which the player recorded a stat, all positions including defense and kickers. 150 columns, identical in every season.
+- **Not in this file:** a player who played without recording a stat. From 2013 to 2026, 93,923 snap-count rows of players in `players` have no row here; since 2016 that is 8,066 of the 68,063 QB, RB, WR and TE player-games with an offensive snap (25% for TE, 10% for WR). A stat line with nothing in a category holds 0 in its counts and shares and null in `passing_epa`, `passing_cpoe`, `pacr`, `rushing_epa`, `receiving_epa`, `racr`, `fg_long`, `fg_pct`, `pat_pct` and `pt_long`.
 - **Key:** `player_id, game_id`, unique in all 28 seasons. `player_id` is the gsis ID.
 - **Links:** every `game_id` is in the schedule.
 - **Rows to drop:** from 2001 on, one row per week has a null `player_id`, null name and null position (21 or 22 a season).
@@ -188,7 +189,7 @@ Built into `data/core/` by `python -m nfl_lake build-core`, gated by Strategy 1 
 | `game.parquet` | `game_id` | Schedules: kickoff in UTC (`kickoff_utc`), teams in current 32 codes, lines, rest, roof, surface |
 | `team_game.parquet` | `game_id, team` | Team stats joined to `game` for opponent, `is_home`, `points_scored`/`points_allowed`, `favored_by` (+ if team is favored), and `total_line` |
 | `player.parquet` | `gsis_id` | Players with normalized `latest_team`/`draft_team`, enriched with latest `sleeper_id` and `yahoo_id` from `weekly_rosters` |
-| `player_game.parquet` | `game_id, player_id` | Player stats, plus snaps through `pfr_id`, plus Next Gen Stats (with Super Bowl week `22→21` / `23→22` alignment), plus PFR advanced stats where present |
+| `player_game.parquet` | `game_id, player_id` | Every player with a stat line or a snap in the game: player stats, plus snaps through `pfr_id`, plus Next Gen Stats (with Super Bowl week `22→21` / `23→22` alignment), plus PFR advanced stats where present. A player with snaps and no stat line (2013 on) has `has_stat_line` false and the values of an empty stat line |
 | `play/play_<season>.parquet` | `game_id, play_id` | Play-by-play partitioned per season with normalized teams, plus participation (`2016+`), plus FTN charting (`2022+`) |
 | `player_week_status.parquet` | `season, week, team, gsis_id` | `FULL OUTER JOIN` of `weekly_rosters` (`2016+`) and `injuries` (`2016+`) so injury-only rows are preserved |
 | `depth_chart_snapshot.parquet` | `dt, team, pos_id, pos_rank` | Snapshot depth charts (`2025+`), parsed `snapshot_utc`, and missing `gsis_id` values rescued via `players.espn_id` |

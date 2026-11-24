@@ -2,7 +2,7 @@
 
 Measured on 24 Nov 2026 (through week 11 of the 2026 season) against the full local lake (`185` files, `619.9 MB`, `18` datasets in `data/clean/`, verified clean with `python -m nfl_lake verify --deep`).
 
-This document holds every real-world baseline number, team-code mapping, join quirk, checkbook rule, DraftKings scoring delta, and pinned real NFL anchor game needed to enforce automatic publish-time checks across **Stage 3 (Ingest)**, **Stage 4 (Core tables)**, **Stage 5 (Features)**, and **Stage 6 (Projections & DraftKings)** — with zero guessed tolerances.
+This document holds the measured baseline numbers, team-code mappings, join quirks, checkbook rules, DraftKings scoring deltas, and pinned real NFL anchor games behind the publish-time checks. The rules for **Stage 3 (Ingest)** and **Stage 4 (Core tables)** are enforced by `nfl_lake/checks.py` on every `build-core` and `verify`. The rules for **Stage 5 (Features)** and **Stage 6 (Projections & DraftKings)** are measured here and no code runs them yet.
 
 ---
 
@@ -43,12 +43,12 @@ Across every team column of all 18 datasets in `data/clean/`, only **four** non-
 | `OAK` | `LV` | `schedules`, `weekly_rosters`, `snap_counts`, `injuries`, `pbp_participation`, `pfr_week_*` |
 | `SD` | `LAC` | `schedules`, `weekly_rosters`, `snap_counts`, `injuries`, `pbp_participation` |
 | `STL` | `LA` | `schedules`, `snap_counts`, `injuries` |
-| `LAR` | `LA` | `ngs_passing`, `ngs_rushing`, `ngs_receiving` *(new discovery — not in `SOURCE_INVENTORY.md`)* |
+| `LAR` | `LA` | `ngs_passing`, `ngs_rushing`, `ngs_receiving` |
 | `''` | `NULL` | `pbp.posteam`, `pbp_participation.possession_team` (timeouts, quarter ends, no-possession rows) |
 
 *Note:* The 2015 NFL internal roster codes (`SL`, `ARZ`, `BLT`, `CLV`, `HST`) do not appear because `weekly_rosters` starts at `min_season: 2016`. After applying the 4 mappings above, every team column in every Stage 4 core table must belong strictly to the **32 current NFL team codes**.
 
-### 2.2 Next Gen Stats Super Bowl Week Mapping (Critical Stage 4 Join Discovery)
+### 2.2 Next Gen Stats Super Bowl Week Mapping
 In `schedules` and `stats_player_week`, the Super Bowl is `week = 21` (2016–2020) and `week = 22` (2021+). In `ngs_passing`, `ngs_rushing`, and `ngs_receiving`, NFL Next Gen Stats counts the Pro Bowl bye week, so **the Super Bowl is stored one week higher**:
 - `season <= 2020 AND season_type = 'POST' AND week = 22` → map to `week = 21`
 - `season >= 2021 AND season_type = 'POST' AND week = 23` → map to `week = 22`
@@ -76,7 +76,16 @@ In `schedules` and `stats_player_week`, the Super Bowl is `week = 21` (2016–20
 | `ftn_charting` `(game_id, play_id)` → `pbp` | — | **100.00%** (`0` unmatched / 212,685 plays) | Spotless |
 | `pbp_participation` `(game_id, play_id)` → `pbp` | — | `2016–2022`: `5,396` unmatched (~770/yr); **`2023–2025`: `0` unmatched** | Left-join onto `play` so `play` never loses or duplicates rows |
 
-### 2.4 Kickoff Timestamps (`schedules` → `game.kickoff_utc`)
+### 2.4 Players Who Played Without a Stat Line (`snap_counts` → `player_game`)
+`stats_player_week` has a row only for a player who recorded a stat. `snap_counts` (2013 on) has a row for everyone who was on the field.
+
+- **All positions, `2013–2026`:** `93,923` snap-count rows of players in `players` have no stat line in that game. Offensive linemen are the largest group (`33,237` of the `74,842` from 2016 on).
+- **QB, RB, WR and TE with an offensive snap, `2016–2026`:** `8,066` of `68,063` player-games have no stat line: TE `25.4%`, WR `10.3%`, RB `4.3%`, QB `2.0%`. `194` of them played 40 snaps or more.
+- **What an average over stat lines alone does:** tight ends in 2025 averaged `3.12` targets over their stat lines and `2.38` over every game with an offensive snap.
+
+`player_game` therefore holds every stat line plus one row for each of those snap-count rows, with `has_stat_line` false and the values upstream writes in an empty stat line (`0` in counts and shares, null in the per-attempt rates). `86` of the `8,066` carry a PFR id that `players` does not have and cannot be keyed, so they stay out. In the built table `0` of the `67,977` skill-position snap rows with a known player are missing, and `486,957` rows have `has_stat_line`, one per `stats_player_week` row.
+
+### 2.5 Kickoff Timestamps (`schedules` → `game.kickoff_utc`)
 - **Null `gametime` rows:** Only season `1999` (`259` games). Every game from `2000–2026` (`7,289` games) has a valid `HH:MM` US Eastern kickoff time.
 - **Measured UTC kickoff hour distribution (all `7,289` games from `2000–2026`):**
   - Every single game starts between **`13:00` UTC and `03:59` UTC** (London/international morning games at `13:30`/`14:30` UTC through late Monday Night West Coast doubleheaders up to `23:30` ET = `03:30` UTC in `2013_05_SD_OAK`).
@@ -86,7 +95,7 @@ In `schedules` and `stats_player_week`, the Super Bowl is `week = 21` (2016–20
 
 ## 3. Calibrated Strategy 1 Checkbook Rules (Stages 3–6)
 
-Every rule below returns failing rows (`0` rows = pass). Hard rules (`error`) block publishing; warnings (`warn`) print loudly without stopping the run.
+Every rule below returns failing rows (`0` rows = pass). Hard rules (`error`) block publishing; warnings (`warn`) print loudly without stopping the run. A rule whose query cannot be run, because a file it reads is unreadable or has lost a column, blocks publishing whatever its level. Sections 3.2 and 3.3 use the names the checks have in `nfl_lake/checks.py`.
 
 ### 3.1 Measured Historical Comparison: `1999–2015` vs `2016–2026`
 
@@ -109,9 +118,10 @@ This side-by-side comparison explains why **`2016+` is dramatically cleaner** fo
 
 | Rule | Level | Exact Condition | Known Historical Exceptions |
 |---|---|---|---|
-| `reg_game_counts` | `error` | Completed seasons in `schedules` have `248` REG (`1999–2001`), `256` REG (`2002–2020`), `272` REG (`2021+`). | `2022` has `271` REG (cancelled Week 17 BUF–CIN). |
-| `no_orphan_game_ids` | `error` | `0` `game_id`s in `pbp`, `stats_player_week`, `stats_team_week`, `snap_counts`, `pbp_participation`, `ftn_charting`, `pfr_week_*` missing from `schedules`. | None (`0` orphans across all 10 sources). |
-| `played_games_present` | `error` (core) / `warn` (lagging) | Every played game in `schedules` appears in `pbp`, `stats_player_week`, `stats_team_week`, `snap_counts`. | `1999_01_BAL_STL`, `2000_03_SD_KC`, `2000_06_BUF_MIA` missing from `pbp`/`stats_*`. In-season `ftn_charting` (1 game lag) and `pfr_week_*` (current-week lag) checked as `warn`. |
+| `clean_reg_game_counts` | `error` | Completed seasons in `schedules` have `248` REG (`1999–2001`), `256` REG (`2002–2020`), `272` REG (`2021+`). | `2022` has `271` REG (cancelled Week 17 BUF–CIN). |
+| `clean_no_orphan_game_ids`, `clean_participation_no_orphan_game_ids`, `clean_ftn_no_orphan_game_ids` | `error` | `0` `game_id`s in `pbp`, `stats_player_week`, `stats_team_week`, `snap_counts`, `pfr_week_*`, `pbp_participation`, `ftn_charting` missing from `schedules`. | None (`0` orphans across all 10 sources). |
+| `clean_played_games_in_core_feeds` | `error` | Every played game in `schedules` appears in `pbp`, `stats_player_week`, `stats_team_week`, and from 2013 `snap_counts`. | `1999_01_BAL_STL`, `2000_03_SD_KC`, `2000_06_BUF_MIA` missing from `pbp`/`stats_*`. Expected to fail between a final score reaching `schedules` and the next update of the other feeds; that has not been observed or timed. |
+| `clean_ftn_in_season_lag`, `clean_pfr_in_season_lag` | `warn` | Played games since 2022 not yet in `ftn_charting`, and since 2018 not yet in `pfr_week_pass`. | On the measurement date: 1 game and 12 games. |
 
 ### 3.3 Stage 4 (Core Tables `data/core/`) Publish-Time Checks
 
@@ -120,37 +130,37 @@ All rules below run on `data/core/` in staging **before** publishing. Strict rul
 | Family | Rule | Level | Scope | Exact Check |
 |---|---|---|---|---|
 | **Shape & Joins** | `core_keys_unique` | `error` | all | Primary key unique + non-null on all 7 core tables. |
-| **Shape & Joins** | `zero_join_fanout` | `error` | all | `count(player_game) == count(stats_player_week)`, `count(play) == count(pbp)`, `count(team_game) == 2 * count(played games in game)` (`2016+`). |
-| **Shape & Joins** | `team_game_symmetry` | `error` | `2016+` | Every played game has exactly 2 `team_game` rows (1 home, 1 away) with matching reciprocal `opponent`. |
-| **Shape & Joins** | `players_bridge_ids_unique` | `error` | all | `players.pfr_id` and `players.espn_id` have `0` duplicates among non-null values. |
-| **Shape & Joins** | `player_game_id_coverage` | `error` | `2016+` | `100%` of `player_game.player_id` exist in `player.gsis_id`. |
-| **Shape & Joins** | `snap_join_coverage` | `error` | `2016+` | `>= 99.5%` of `snap_counts` QB/RB/WR/TE rows resolve to `player.gsis_id` via `pfr_id` (measured: `99.85%`). |
-| **Shape & Joins** | `ngs_weekly_join_complete` | `error` | `2016+` | After dropping `week=0` and mapping SB week (`22->21`, `23->22`), `0` weekly NGS rows fail to join `player_game`. |
-| **Standardization** | `only_32_current_teams` | `error` | all | Every non-null team column across all 7 core tables is in the 32 current NFL team codes (zero `OAK`, `SD`, `STL`, `LAR`, `''`). |
-| **Standardization** | `kickoff_utc_valid` | `error` | `2000+` | `game.kickoff_utc` is non-null UTC and never falls in `04:00–12:59` UTC. |
-| **Checkbook** | `pass_td_equals_rec_td` | `error` | all | `sum(player_game.passing_tds) == sum(player_game.receiving_tds)` per `(game_id, team)`. |
-| **Checkbook** | `player_sums_equal_team` | `error` | `2016+` | `sum(player_game)` == `team_game` for all 12 core cols (`completions`, `attempts`, `passing_yards`, `passing_tds`, `passing_interceptions`, `carries`, `rushing_yards`, `rushing_tds`, `receptions`, `targets`, `receiving_yards`, `receiving_tds`). |
-| **Checkbook** | `team_points_equal_schedule` | `error` | `2016+` | Derived `team_game` points (`6*(pass+rush+def+st+fum_rec TDs) + 3*fg_made + pat_made + 2*(rush_2pt+rec_2pt+def_2pt+def_safeties)`) == `game.home_score` / `away_score`. |
-| **Checkbook** | `pbp_equals_team_boxscore` | `error` | `2016+` | `sum(play)` == `team_game` for `passing_yards`, `rushing_yards + lateral_rushing_yards`, `pass_touchdown`, and `rush_touchdown` per `(game_id, team)`. |
-| **Checkbook** | `targets_vs_attempts_gap` | `error` | `2016+` | `0 <= team_game.attempts - team_game.targets <= 15` (measured max: `9`). |
-| **Checkbook** | `snap_11_player_physics` | `error` / `warn` | `2016+` | `error` if `sum(offense_snaps) / max(offense_snaps)` outside `[10.0, 12.0]` (measured: `10.275–11.830`, p0.5–p99.5 = `10.986–11.015`); `warn` if `sum(offense_pct)` outside `[10.5, 11.5]` (flags only the 2 known 2019 KC PFR-denominator games). |
-| **Domain Bounds** | `stat_ranges_valid` | `error` | `2016+` | `completions <= attempts`, `receptions <= targets`, counts `>= 0`, `offense_pct` in `[0, 1]`, `passing_yards` in `[-50, 650]`, `rushing_yards` in `[-60, 350]`, `receiving_yards` in `[-50, 380]`, team scores in `[0, 80]` (measured historical extremes: pass `-16..527`, rush `-34..296`, rec `-22..329`, score `0..70`). |
-| **Anchors** | `anchor_games_exact` | `error` | pinned | All pinned real games in Section 5 match exact expected values. |
+| **Shape & Joins** | `core_zero_join_fanout` | `error` | all | `count(game) == count(schedules)`, `count(player) == count(players)`, `count(play) == count(pbp)`, `count(depth_chart_snapshot) == count(depth_charts)`, `count(team_game) == 2 * count(played games in game)` (`2016+`). For `player_game`: rows with `has_stat_line` `== count(stats_player_week)`, and all rows `==` the stat lines plus the `snap_counts` rows of known players with no stat line in that game (Section 2.4). |
+| **Shape & Joins** | `core_team_game_symmetry` | `error` | `2016+` | Every played game has exactly 2 `team_game` rows (1 home, 1 away) with matching reciprocal `opponent`. |
+| **Shape & Joins** | `core_players_bridge_ids_unique` | `error` | all | `players.pfr_id` and `players.espn_id` have `0` duplicates among non-null values. |
+| **Shape & Joins** | `core_foreign_keys_hold` | `error` | all / `2016+` | Every `game_id` in `team_game`, `player_game` and `play` exists in `game`; from 2016, `100%` of `player_game.player_id` exist in `player.gsis_id`. |
+| **Shape & Joins** | `core_snap_join_coverage` | `error` | `2016+` | `>= 99.5%` of `snap_counts` QB/RB/WR/TE rows resolve to `player.gsis_id` via `pfr_id` (measured: `99.85%`). |
+| **Shape & Joins** | `core_ngs_weekly_join_complete` | `error` | `2016+` | After dropping `week=0` and mapping SB week (`22->21`, `23->22`), `0` weekly NGS rows fail to join `player_game`. |
+| **Standardization** | `core_only_32_current_teams` | `error` | all | Every non-null team column across all 7 core tables is in the 32 current NFL team codes (zero `OAK`, `SD`, `STL`, `LAR`, `''`). |
+| **Standardization** | `core_kickoff_utc_valid` | `error` | `2000+` | `game.kickoff_utc` is non-null UTC and never falls in `04:00–12:59` UTC. |
+| **Checkbook** | `core_pass_td_equals_rec_td` | `error` | all | `sum(player_game.passing_tds) == sum(player_game.receiving_tds)` per `(game_id, team)`. |
+| **Checkbook** | `core_player_sums_equal_team` | `error` | `2016+` | `sum(player_game)` == `team_game` for all 12 core cols (`completions`, `attempts`, `passing_yards`, `passing_tds`, `passing_interceptions`, `carries`, `rushing_yards`, `rushing_tds`, `receptions`, `targets`, `receiving_yards`, `receiving_tds`). |
+| **Checkbook** | `core_team_points_equal_schedule` | `error` | `2016+` | Derived `team_game` points (`6*(pass+rush+def+st+fum_rec TDs) + 3*fg_made + pat_made + 2*(rush_2pt+rec_2pt+def_2pt+def_safeties)`) == `game.home_score` / `away_score`. |
+| **Checkbook** | `core_pbp_equals_team_boxscore` | `error` | `2016+` | `sum(play)` == `team_game` for `passing_yards`, `rushing_yards + lateral_rushing_yards`, `pass_touchdown`, and `rush_touchdown` per `(game_id, team)`. |
+| **Checkbook** | `core_targets_vs_attempts_gap` | `error` | `2016+` | `0 <= team_game.attempts - team_game.targets <= 15` (measured max: `9`). |
+| **Checkbook** | `core_snap_11_player_physics`, `core_snap_pct_11_player_warn` | `error`, `warn` | `2016+` | `error` if `sum(offense_snaps) / max(offense_snaps)` outside `[10.0, 12.0]` (measured: `10.275–11.830`, p0.5–p99.5 = `10.986–11.015`); `warn` if `sum(offense_pct)` outside `[10.5, 11.5]` (flags only the 2 known 2019 KC PFR-denominator games). |
+| **Domain Bounds** | `core_stat_ranges_valid` | `error` | `2016+` | `completions <= attempts`, `receptions <= targets`, counts `>= 0`, `offense_pct` in `[0, 1]`, `passing_yards` in `[-50, 650]`, `rushing_yards` in `[-60, 350]`, `receiving_yards` in `[-50, 380]` (measured historical extremes: pass `-16..527`, rush `-34..296`, rec `-22..329`). |
+| **Anchors** | `core_anchor_games_exact` | `error` | pinned | Each pinned game in Section 5 that is in `game` matches the values the check pins for it. |
 
-### 3.4 Stage 5 (Features `data/features/`) Publish-Time Checks
+### 3.4 Stage 5 (Features `data/features/`) Publish-Time Checks (not built)
 - **`time_travel_zero_leakage` (`error`):** For 2–3 real historical cutoffs (e.g. Week 6 2024 kickoff, Week 12 2025 kickoff), rebuild features on a truncated copy of `data/core/` with all rows having `kickoff_utc >= cutoff` and `depth_chart_snapshot.dt >= cutoff` removed. Every feature value for the target week must be **100% bit-for-bit identical** to the full-lake build.
 - **`row_order_invariant` (`error`):** Shuffle 1 full season of `data/core/` input rows, rebuild features, sort by key, and assert **100% equality** with the unshuffled build.
 - **`feature_ranges_and_finiteness` (`error`):** Zero `Inf`/`-Inf`; share/rate features in `[0.0, 1.0]`; single-game team share sums equal `1.0` (`±1e-6`); Week 5+ null rates stay under configured ceilings per column.
 - **`feature_row_preservation` (`error`):** `1:1` key match with `player_game` (plus scheduled upcoming players when running inference).
 
-### 3.5 Stage 6 (Projections & DraftKings `data/projections/`) Publish-Time Checks
+### 3.5 Stage 6 (Projections & DraftKings `data/projections/`) Publish-Time Checks (not built)
 - **`dk_offense_reconciles_ppr` (`error`):** Verify our computed DraftKings offensive points match `fantasy_points_ppr + documented DK deltas` across 100% of `2016+` player-games (see Section 4 below).
 - **`dk_kicker_buckets_exact` (`error`):** `fg_made == fg_made_0_19 + fg_made_20_29 + fg_made_30_39 + fg_made_40_49 + fg_made_50_59 + fg_made_60_` (`0` diffs across `5,792` kicker-games in `2016–2026`).
 - **`dk_anchor_scores_exact` (`error`):** Exact match to `0.01` pts on all offensive, DST, and kicker anchor games in Section 5.
 - **`inactive_and_bye_zero` (`error`):** Players listed `Out`/`IR` or on a bye week receive `0.0` projected points.
 - **`team_projection_conservation` (`warn`):** Sum of projected team player touchdowns/points stays within a calibrated band of Vegas implied team totals from `spread_line` and `total_line`.
 - **`walk_forward_backtest_gate` (`error`):** Chronological out-of-sample MAE/calibration beats (or stays within threshold of) the simple baseline before promoting a new model.
-- **`lineup_legality` (`error`):** Salary `<= 50,000`, exact slot counts from [draftkings.yml](file:///c:/Users/blake/code/nfl/nfl_data/catalog/draftkings.yml), unique players, `>= 2` NFL teams.
+- **`lineup_legality` (`error`):** Salary `<= 50,000`, exact slot counts from [draftkings.yml](../catalog/draftkings.yml), unique players, `>= 2` NFL teams.
 
 ---
 
@@ -169,7 +179,7 @@ fantasy_points_ppr =
   + 6.0  * special_teams_tds
 ```
 
-### 4.2 Exact Differences vs DraftKings Rules ([catalog/draftkings.yml](file:///c:/Users/blake/code/nfl/nfl_data/catalog/draftkings.yml))
+### 4.2 Exact Differences vs DraftKings Rules ([catalog/draftkings.yml](../catalog/draftkings.yml))
 **`fantasy_points_ppr` does NOT match DraftKings scoring.** Do not train directly on `fantasy_points_ppr`; compute DraftKings points explicitly from stat columns because of **five exact differences**:
 
 1. **Yardage bonuses (missing from `fantasy_points_ppr`):** `+3` for `passing_yards >= 300`, `+3` for `rushing_yards >= 100`, `+3` for `receiving_yards >= 100`.
@@ -183,7 +193,7 @@ fantasy_points_ppr =
 
 ## 5. Pinned Real Anchor Games (Measured Ground Truth)
 
-These 9 real NFL records will be verified on every Stage 4 and Stage 6 build:
+Ten real NFL records, measured from the lake. `core_anchor_games_exact` pins part of each row on every `build-core` and `verify`; the query in `nfl_lake/checks.py` is the list of what it pins. Every `ppr` and `DK` score, and the remaining values, are ground truth for the Stage 6 checks and no code checks them yet.
 
 | # | Edge Case Tested | Game / Player | Measured Ground Truth |
 |---|---|---|---|
@@ -197,19 +207,14 @@ These 9 real NFL records will be verified on every Stage 4 and Stage 6 build:
 | **7** | DK 100+ rusher + receiving TD + fumble lost | Saquon Barkley (`00-0034844`) in `2024_09_JAX_PHI` | `27` car, `159` rush yds, `1` rush TD, `3` rec, `40` rec yds, `1` rec TD, `1` FL; `ppr = 32.90`, **`DK = 36.90`** (`+3` bonus, `+1` FL delta). |
 | **8** | DK DST + opponent pick-six points-allowed test | `2024_13_CLE_DEN` (`DEN 41, CLE 32`; DEN had 2 pick-sixes) | **DEN DST:** `3` sacks (`+3`), `3` INT (`+6`), `2` def TDs (`+12`), allowed `32` pts w/ `0` CLE def/ST TDs (`-1`) → **`DK = 20.0`**. **CLE DST:** scoreboard shows `41` pts (`-4`), but DEN defense scored `2` pick-sixes (`12` pts + `2` PATs = `14` pts); subtracting the 2 defensive TDs yields `29` pts allowed (`-1`) instead of `41` (`-4`). |
 | **9** | DK Kicker (all 3 FG brackets + PAT) | Jake Moody (`00-0038562`, `SF`) in `2024_01_NYJ_SF` | `2` FG 0–39 (`6`), `2` FG 40–49 (`8`), `2` FG 50+ (`10`), `2` PAT (`2`), `6` total FG → **`DK = 26.0`**. |
+| **10** | Played without a stat line (row comes from `snap_counts` alone) | Cade Otton (`00-0038129`, `TB`) in `2025_03_NYJ_TB` | `66` off snaps (`92%`), `0` targets, no row in `stats_player_week`; `player_game` has the row with `has_stat_line` false. Weeks 1, 2, 4 and 5 have stat lines (`3`, `4`, `4`, `5` targets). |
 
 ---
 
-## 6. Recommended Strict Cutoff & Stage 4 Check Runner Blueprint
+## 6. Why Strict Checks Start in 2016
 
-### Recommended Strict-Enforcement Cutoff: **2016–2026**
-- Keep ingesting `1999–2026` in `data/clean/` (already tiny and uniform), **and enforce all strict cross-source `error` checks on `season >= 2016`**:
-  1. Every single cross-source checkbook identity (`player == team`, `derived_pts == schedule`, `pbp == team`, `receptions <= targets`, `stats_player_week -> players`, `ngs_weekly -> player_game`) has **literally zero (`0`) failures** across all `5,848` team-games from `2016–2026`.
-  2. `weekly_rosters`, `pbp_participation`, and `ngs_*` all begin in `2016` (and `snap_counts` is complete for every game from `2013+`).
-  3. Before `2016`, real upstream nflverse artifacts exist (`1999` null gametimes, `1999–2000` 3 play-less games, `2001–2002` missing JAX team rows, `2002–2008` missing targets, `2002–2015` duplicate weekly rosters).
+`data/clean/` holds `1999–2026`, and the strict cross-source `error` checks apply to `season >= 2016`:
 
-### Minimal Check Runner Architecture (Ready for Stage 4)
-Keep it tiny (~60–80 lines, zero new dependencies — DuckDB + Polars only):
-- Each check is a small `(name, severity: Literal["error", "warn"], sql_or_fn)` returning failing sample rows (capped at 5 rows).
-- Every stage build writes Parquet to `data/_staging/<stage>/`, runs its check list against the staged folder, prints any `warn` rows, and moves files into `data/<stage>/` **only if zero `error` checks returned rows**.
-- Re-runnable anytime via `verify` without rebuilding.
+1. Every cross-source checkbook identity (`player == team`, `derived_pts == schedule`, `pbp == team`, `receptions <= targets`, `stats_player_week -> players`, `ngs_weekly -> player_game`) has `0` failures across all `5,848` team-games from `2016–2026`.
+2. `weekly_rosters`, `pbp_participation`, and `ngs_*` all begin in `2016` (and `snap_counts` is complete for every game from `2013+`).
+3. Before `2016`, real upstream nflverse artifacts exist (`1999` null gametimes, `1999–2000` 3 play-less games, `2001–2002` missing JAX team rows, `2002–2008` missing targets, `2002–2015` duplicate weekly rosters).

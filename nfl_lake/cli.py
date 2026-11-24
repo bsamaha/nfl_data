@@ -15,7 +15,13 @@ import yaml
 
 from .catalog import Catalog, load_catalog
 from .checks import format_check_outcome
-from .core import CORE_TABLE_NAMES, CoreBuildFailed, build_core_tables, verify_core_tables
+from .core import (
+    CORE_TABLE_NAMES,
+    CoreBuildFailed,
+    build_core_tables,
+    list_changed_clean_inputs,
+    verify_core_tables,
+)
 from .pipeline import UpdateFailed, get_lake_status, run_update, verify_lake
 from .source import GitHubReleasesSource, LocalDirSource, SourceError, UpstreamSource
 from .store import LakeLocked, LakeStore
@@ -209,15 +215,19 @@ def _cmd_status(args: argparse.Namespace) -> None:
         for error_message in last_run["errors"]:
             print(f"  ERROR {error_message}")
     core_state = lake.load_core_state()
-    if core_state:
+    if core_state is not None:
         print()
-        print(f"{'core table':<22}{'files':>6}{'rows':>12}  built")
+        print(f"{'core table':<22}{'files':>6}{'rows':>12}")
         for table_name in CORE_TABLE_NAMES:
-            entry = core_state.get(table_name)
-            if entry is None:
+            table_record = core_state.tables.get(table_name)
+            if table_record is None:
                 print(f"{table_name:<22}{0:>6}{0:>12}  (missing)")
             else:
-                print(f"{table_name:<22}{len(entry['files']):>6}{entry['rows']:>12,}  {entry['built_at']}")
+                print(f"{table_name:<22}{len(table_record.files):>6}{table_record.rows:>12,}")
+        print(f"core built {core_state.built_at} by {core_state.run_id}")
+        changed_inputs = list_changed_clean_inputs(lake, core_state)
+        if changed_inputs:
+            print(f"core is behind clean: {len(changed_inputs)} clean file(s) changed since; run build-core")
 
 
 def _cmd_build_core(args: argparse.Namespace) -> None:
