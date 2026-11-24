@@ -12,13 +12,30 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+
+# What every clean_state.json entry holds, whichever version of the code wrote it.
+_CLEAN_STATE_FIELDS = frozenset(
+    {
+        "dataset",
+        "asset",
+        "season",
+        "rows",
+        "rejected_rows",
+        "deduped_rows",
+        "columns",
+        "contract",
+        "raw_sha256",
+        "upstream_updated_at",
+        "built_at",
+    }
+)
 
 
 class LakeLocked(RuntimeError):
@@ -59,10 +76,16 @@ class LakeStore:
         return path.relative_to(self.root_dir).as_posix()
 
     # manifest ------------------------------------------------------------------------------
+    # A write that was killed can leave a last line of runs.jsonl with no end. The next record starts a new line so
+    # that it is not joined to it, and a line that cannot be read is passed over when loading.
     def append_run_record(self, record: dict) -> None:
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
-        with open(self.manifest_dir / "runs.jsonl", "a", encoding="utf-8") as file_handle:
-            file_handle.write(json.dumps(record, sort_keys=True) + "\n")
+        with open(self.manifest_dir / "runs.jsonl", "a+b") as file_handle:
+            if file_handle.seek(0, os.SEEK_END):
+                file_handle.seek(-1, os.SEEK_END)
+                if file_handle.read(1) != b"\n":
+                    file_handle.write(b"\n")
+            file_handle.write((json.dumps(record, sort_keys=True) + "\n").encode())
             file_handle.flush()
             os.fsync(file_handle.fileno())
 
@@ -70,20 +93,26 @@ class LakeStore:
         runs_path = self.manifest_dir / "runs.jsonl"
         if not runs_path.exists():
             return []
-        try:
-            with open(runs_path, encoding="utf-8") as file_handle:
-                return [json.loads(line) for line in file_handle if line.strip()]
-        except ValueError as error:
-            raise ValueError(f"{runs_path} is damaged: {error}") from error
+        run_records = []
+        with open(runs_path, encoding="utf-8") as file_handle:
+            for line in file_handle:
+                with contextlib.suppress(ValueError):
+                    run_records.append(json.loads(line))
+        return run_records
 
     def load_clean_state(self) -> dict[str, dict]:
+        """The record of every published file. Hand edits are expected, so its shape is checked, not only its JSON."""
         state_path = self.manifest_dir / "clean_state.json"
         if not state_path.exists():
             return {}
         try:
-            return json.loads(state_path.read_text(encoding="utf-8"))
-        except ValueError as error:
+            clean_state = json.loads(state_path.read_text(encoding="utf-8"))
+            for file_id, entry in clean_state.items():
+                if missing_fields := _CLEAN_STATE_FIELDS - entry.keys():
+                    raise ValueError(f"the entry for {file_id} lacks {', '.join(sorted(missing_fields))}")
+        except (ValueError, AttributeError) as error:  # AttributeError: not an object of objects
             raise ValueError(f"{state_path} is damaged: {error}") from error
+        return clean_state
 
     def save_clean_state(self, clean_state: dict[str, dict]) -> None:
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
@@ -103,7 +132,7 @@ class LakeStore:
         except OSError, ValueError, KeyError, TypeError:
             return ""
 
-    @contextmanager
+    @contextlib.contextmanager
     def acquire_lock(self) -> Iterator[None]:
         self.root_dir.mkdir(parents=True, exist_ok=True)
         try:

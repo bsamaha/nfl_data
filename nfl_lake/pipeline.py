@@ -18,9 +18,7 @@ run ends with UpdateFailed and is recorded as failed in runs.jsonl. A dry run an
 from __future__ import annotations
 
 import concurrent.futures as concurrent_futures
-import contextlib
 import dataclasses
-import filecmp
 import logging
 import os
 import re
@@ -45,6 +43,8 @@ LISTING_RECHECKS = 3
 # What polars raises for a Parquet file it cannot read. PanicException is not an Exception subclass.
 UNREADABLE_PARQUET_ERRORS = (pl.exceptions.PolarsError, pl.exceptions.PanicException, OSError)
 _RAW_METADATA_FIELDS = ("raw_sha256", "raw_size", "raw_path", "upstream_updated_at", "upstream_built_at")
+# An update leaves a published file alone while upstream has not changed, so a damaged one has to go first.
+_REPAIR_ADVICE = "delete it and run update to rebuild it"
 
 
 class UpdateFailed(Exception):
@@ -193,9 +193,17 @@ def _has_stored_raw(published_entry: dict | None, lake: LakeStore) -> bool:
     )
 
 
+def _published_files_exist(published_entry: dict, lake: LakeStore) -> bool:
+    """The clean file is in place, and so is the set-aside file if rows were set aside."""
+    dataset_name, filename = published_entry["dataset"], published_entry["asset"]
+    return lake.clean_file_path(dataset_name, filename).exists() and (
+        not published_entry["rejected_rows"] or lake.rejects_file_path(dataset_name, filename).exists()
+    )
+
+
 def _needs_rebuild(target: IngestTarget, clean_state: dict[str, dict], lake: LakeStore) -> bool:
     published = clean_state.get(target.file_id)
-    if published is None or not lake.clean_file_path(target.dataset.name, target.asset.filename).exists():
+    if published is None or not _published_files_exist(published, lake):
         return True
     if _upstream_changed(target, published) or published["contract"] != target.dataset.contract:
         return True
@@ -381,29 +389,24 @@ def _build_one_target(
     build_result.clean_frame.write_parquet(staged_clean_path, compression="zstd")
     clean_sha256 = compute_file_sha256(staged_clean_path)
 
-    staged_rejects_path = None
+    staged_rejects_path = rejects_sha256 = None
     if build_result.rejected_frame is not None:
         staged_rejects_path = staging_dir / "rejects" / target.dataset.name / target.asset.filename
         staged_rejects_path.parent.mkdir(parents=True, exist_ok=True)
         build_result.rejected_frame.write_parquet(staged_rejects_path, compression="zstd")
+        rejects_sha256 = compute_file_sha256(staged_rejects_path)
 
     # Upstream often republishes a file with the same rows and a new build time. When no row was dropped for a
     # repeated key, the clean and set-aside files hold every raw row between them, so files identical to the
     # published ones mean identical rows: nothing is rewritten, no second raw snapshot is stored, and only the
     # record is refreshed.
-    published_rejects_path = lake.rejects_file_path(target.dataset.name, target.asset.filename)
     if (
         previous_clean_state is not None
         and previous_clean_state["contract"] == target.dataset.contract
         and previous_clean_state["clean_sha256"] == clean_sha256
+        and previous_clean_state.get("rejects_sha256") == rejects_sha256
         and previous_clean_state["deduped_rows"] == build_result.deduped_row_count == 0
-        and previous_clean_state["rejected_rows"] == build_result.rejected_row_count
-        and lake.clean_file_path(target.dataset.name, target.asset.filename).exists()
-        and (
-            filecmp.cmp(staged_rejects_path, published_rejects_path, shallow=False)
-            if staged_rejects_path and published_rejects_path.exists()
-            else staged_rejects_path is None and not published_rejects_path.exists()
-        )
+        and _published_files_exist(previous_clean_state, lake)
         and (target.dataset.history != "all" or _has_stored_raw(previous_clean_state, lake))
     ):
         for staged_path in (staged_clean_path, staged_rejects_path, staged_raw_path):
@@ -422,6 +425,7 @@ def _build_one_target(
         "asset": target.asset.filename,
         "season": target.season,
         "clean_sha256": clean_sha256,
+        "rejects_sha256": rejects_sha256,
         "rows": build_result.clean_frame.height,
         "rows_in": build_result.input_row_count,
         "rejected_rows": build_result.rejected_row_count,
@@ -529,6 +533,8 @@ def _execute_update(
     targets, summary.plan_errors = plan_ingest_targets(catalog, listing, clean_state, dataset_names, season_filter)
     summary.target_file_count = len(targets)
     summary.dataset_count = len({target.dataset.name for target in targets})
+    if not targets and not summary.plan_errors:  # a mistyped season, or an empty catalog, must not pass as success
+        raise UpdateFailed(["nothing to update: no upstream file matches the datasets and seasons selected"])
 
     if summary.dry_run:
         targets_to_fetch = [target for target in targets if _needs_fetch(target, clean_state, lake)]
@@ -621,6 +627,8 @@ def run_update(
         return summary
 
     with lake.acquire_lock():
+        # Under the lock nothing else uses staging, so whatever a killed run left there is removed first.
+        shutil.rmtree(lake.staging_dir, ignore_errors=True)
         try:
             execute()
         except UpdateFailed as error:
@@ -636,9 +644,7 @@ def run_update(
         else:
             record_run("ok", [])
         finally:
-            shutil.rmtree(staging_dir, ignore_errors=True)
-            with contextlib.suppress(OSError):
-                lake.staging_dir.rmdir()  # only succeeds when empty
+            shutil.rmtree(lake.staging_dir, ignore_errors=True)
     return summary
 
 
@@ -674,7 +680,7 @@ def verify_lake(
             try:
                 key_frame = pl.read_parquet(clean_path, columns=dataset.key_columns)
             except UNREADABLE_PARQUET_ERRORS as error:
-                errors.append(f"{file_id}: clean file cannot be read ({type(error).__name__})")
+                errors.append(f"{file_id}: clean file cannot be read ({type(error).__name__}); {_REPAIR_ADVICE}")
             else:
                 if key_frame.height != published_entry["rows"]:
                     errors.append(
@@ -687,7 +693,13 @@ def verify_lake(
                         f"{violations.duplicate_key_rows} row(s) repeating a key"
                     )
             if deep and compute_file_sha256(clean_path) != published_entry["clean_sha256"]:
-                errors.append(f"{file_id}: clean file no longer matches its recorded checksum")
+                errors.append(f"{file_id}: clean file no longer matches its recorded checksum; {_REPAIR_ADVICE}")
+        rejects_path = lake.rejects_file_path(dataset.name, published_entry["asset"])
+        recorded_rejects_sha256 = published_entry.get("rejects_sha256")
+        if published_entry["rejected_rows"] and not rejects_path.exists():
+            errors.append(f"{file_id}: set-aside file is missing; run update to rebuild it")
+        elif deep and recorded_rejects_sha256 and compute_file_sha256(rejects_path) != recorded_rejects_sha256:
+            errors.append(f"{file_id}: set-aside file no longer matches its recorded checksum; {_REPAIR_ADVICE}")
         if deep and published_entry.get("raw_path") and not _has_stored_raw(published_entry, lake):
             errors.append(f"{file_id}: raw file {published_entry['raw_path']} is missing")
     if deep:  # a raw snapshot is named after its own checksum, so every one is checked, not only the newest
@@ -700,6 +712,8 @@ def verify_lake(
                     errors.append(
                         f"raw file {lake.relative_posix_path(raw_path)} no longer matches the checksum in its name"
                     )
+    if not checked_file_count and not errors:  # a wrong lake folder must not pass as a clean one
+        errors.append("nothing is published for the datasets selected, so nothing was verified")
     return VerificationResult(checked_file_count=checked_file_count, errors=errors)
 
 

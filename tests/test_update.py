@@ -87,6 +87,7 @@ def test_bad_file_fails_the_run_and_keeps_the_published_version(upstream, lake):
     catalog = build_catalog(stats=STATS_DATASET_SPEC)
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame(8))
     run_update(catalog, upstream.source, lake)
+    (lake.staging_dir / "run_killed" / "raw").mkdir(parents=True)  # what a killed run leaves; the next run clears it
 
     upstream.put(
         "stats_player", STATS_FILENAME, pl.concat([make_stats_frame(10), make_stats_frame(11)])
@@ -207,6 +208,15 @@ def test_rows_with_no_key_are_set_aside_only_when_the_catalog_allows_it(upstream
     summary = run_update(build_catalog(stats=allowing_null_keys), upstream.source, lake)
     assert summary.rejected_rows_by_file == {STATS_FILE_ID: 2}
     assert read_clean_frame(lake).height == 198 and pl.read_parquet(rejects_file_path).height == 2
+
+    # The set-aside file is published data too: a changed one is noticed, and a missing one is noticed and rebuilt.
+    catalog = build_catalog(stats=allowing_null_keys)
+    pl.read_parquet(rejects_file_path).head(1).write_parquet(rejects_file_path)
+    assert verify_lake(catalog, lake) == (1, []) and verify_lake(catalog, lake, deep=True).errors != []
+    rejects_file_path.unlink()
+    assert verify_lake(catalog, lake).errors != []
+    run_update(catalog, upstream.source, lake)
+    assert pl.read_parquet(rejects_file_path).height == 2 and verify_lake(catalog, lake, deep=True) == (1, [])
 
     upstream.put("stats_player", STATS_FILENAME, make_frame_with_missing_ids(None, "", None))  # 1.5%, above 1% default
     with pytest.raises(UpdateFailed):

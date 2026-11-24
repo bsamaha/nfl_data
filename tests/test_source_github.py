@@ -230,7 +230,21 @@ def test_download_to_a_folder_that_cannot_be_written_makes_no_request(monkeypatc
     assert requests == []  # a local problem, so nothing is downloaded or retried
 
 
-def test_cli_lists_the_catalog_repo_on_github_with_the_token_when_no_source_folder_is_set(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "body",
+    [b"<html>sign in to the network</html>", b'[{"tag_name": "pbp", "assets": [{"na', b'{"message": "not a list"}'],
+    ids=["a web page", "cut short", "another shape"],
+)
+def test_listing_reply_that_is_not_a_release_listing_is_tried_again_and_then_refused(monkeypatch, body):
+    requests = stub_urlopen(monkeypatch, lambda attempt_number, request: io.BytesIO(body))
+    with pytest.raises(SourceError):
+        GitHubReleasesSource("o/r", max_attempts=2, backoff_seconds=0).list_assets()
+    assert len(requests) == 2
+
+
+def test_cli_lists_the_catalog_repo_on_github_with_the_token_when_no_source_folder_is_set(
+    monkeypatch, tmp_path, capsys
+):
     catalog_path = tmp_path / "datasets.yml"
     catalog_path.write_text(
         yaml.safe_dump(
@@ -242,7 +256,7 @@ def test_cli_lists_the_catalog_repo_on_github_with_the_token_when_no_source_fold
     )
     monkeypatch.setenv("NFL_LAKE_ROOT", str(tmp_path / "lake"))
     monkeypatch.delenv("NFL_LAKE_SOURCE_DIR", raising=False)
-    monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
+    monkeypatch.setenv("GITHUB_TOKEN", "t0ken\n")  # as read from a file: the newline is not part of the token
     requests = stub_urlopen(
         monkeypatch,
         lambda attempt_number, request: io.BytesIO(json.dumps([make_release_payload("pbp", "a.parquet")]).encode()),
@@ -252,6 +266,11 @@ def test_cli_lists_the_catalog_repo_on_github_with_the_token_when_no_source_fold
 
     (request,) = requests
     assert "/repos/example/repo/releases" in request.full_url and request.get_header("Authorization") == "Bearer t0ken"
+
+    monkeypatch.setenv("GITHUB_TOKEN", "s3cret\nvalue")  # not a token: refused before any request, and not printed
+    with pytest.raises(SystemExit):
+        main(["--catalog", str(catalog_path), "update", "--dry-run"])
+    assert len(requests) == 1 and "s3cret" not in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

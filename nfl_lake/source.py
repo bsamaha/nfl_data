@@ -47,6 +47,10 @@ class _NotModified(Exception):
     """Raised when a conditional request with `If-None-Match` returns HTTP 304."""
 
 
+# What reading a release listing raises when it is not one: text that is not JSON, or JSON of another shape.
+_NOT_A_LISTING = (ValueError, LookupError, TypeError, AttributeError)
+
+
 @contextlib.contextmanager
 def _network() -> Iterator[None]:
     """Wrap code that only talks to the network: any OS or HTTP error raised inside is transient.
@@ -166,7 +170,7 @@ class GitHubReleasesSource:
                     raise TypeError
                 for release_payload in cached_page["releases"]:
                     _parse_release_assets(release_payload["tag_name"], release_payload)
-        except OSError, ValueError, LookupError, TypeError, AttributeError:
+        except (OSError, *_NOT_A_LISTING):
             return {}
         return cache
 
@@ -241,10 +245,13 @@ class GitHubReleasesSource:
                     with self._open_request(
                         page_request, operation, allow_not_modified=cached_etag is not None
                     ) as response:
-                        with _network():
-                            payload = json.load(response)
-                        response_etag = getattr(response, "headers", {}).get("ETag")
-                        return [_slim_release_payload(release_payload) for release_payload in payload], response_etag
+                        try:
+                            with _network():
+                                payload = json.load(response)
+                            releases = [_slim_release_payload(release_payload) for release_payload in payload]
+                        except _NOT_A_LISTING as error:  # a body cut short, or a page from something in between
+                            raise _Transient(f"the reply is not a release listing ({type(error).__name__})") from error
+                        return releases, getattr(response, "headers", {}).get("ETag")
                 except _NotModified:
                     assert cached_page is not None
                     return cached_page["releases"], cached_etag

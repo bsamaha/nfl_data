@@ -45,10 +45,12 @@ The first run downloads every file in the catalog, about 600 MB as of November 2
 | `update --datasets pbp,schedules` | Limit the run to these datasets |
 | `update --skip weekly_rosters` | Leave datasets out, e.g. to skip one that is broken upstream for a clean exit 0 |
 | `status` | What is published per dataset, and how the last run ended |
-| `verify` | Re-check every published file against its key; `--deep` also re-hashes clean files and every raw snapshot |
+| `verify` | Re-check every published file against its key; `--deep` also re-hashes clean files, set-aside files and every raw snapshot |
 | `unlock` | Clear the lock left by an update that was killed |
 
-`update` and `verify` exit non-zero when they find a problem. `status` only reports: it exits 0 even when the last run failed. `--help` on any command lists its options.
+`update` and `verify` exit non-zero when they find a problem, and also when they find nothing to work on: a selection that matches no upstream file, or a lake with nothing published. `status` only reports: it exits 0 even when the last run failed. `--help` on any command lists its options.
+
+When `verify` reports a damaged clean or set-aside file, delete that file and run `update` to rebuild it; `update` alone leaves a published file as it is while its upstream copy has not changed. A damaged raw snapshot can only be deleted. If it was the newest, `update` fetches the current upstream file again.
 
 ### What a run guarantees
 

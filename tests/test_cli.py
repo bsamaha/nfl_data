@@ -94,14 +94,43 @@ def test_progress_still_reaches_stderr_after_a_command_has_finished(cli, upstrea
     assert progress and "Traceback" not in progress
 
 
-def test_failed_update_exits_1_and_status_still_exits_0(cli, upstream, lake):
+def test_failed_update_exits_1_and_status_still_exits_0(cli, upstream, lake, monkeypatch):
     upstream.put("stats_player", STATS_FILENAME, pl.concat([make_stats_frame(), make_stats_frame()]))  # every key twice
     result = cli("update")
     assert command_refused(result), result.output
     assert not lake.clean_dir.exists()
 
+    monkeypatch.setenv("LOG_LEVEL", "BASIC_FORMAT")  # not a level, so the default is used
     result = cli("status")  # it reports the failed run; it did not fail itself
     assert command_succeeded(result), result.output
+
+
+def test_run_log_line_cut_short_by_a_kill_costs_only_that_line(cli, upstream, lake):
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
+    assert command_succeeded(cli("update"))
+    with open(lake.manifest_dir / "runs.jsonl", "a") as run_log:
+        run_log.write('{"run_id": "run_cut_short", "status": "o')  # the write never finished
+
+    assert command_succeeded(cli("update")) and command_succeeded(cli("status"))
+    assert [run["fetched"] for run in lake.load_run_records()] == [1, 0]
+
+
+@pytest.mark.parametrize("damaged_state", ["[]", '{"stats/a.parquet": {}}'], ids=["not entries", "an emptied entry"])
+def test_clean_state_of_the_wrong_shape_is_refused_by_every_command_that_reads_it(cli, upstream, lake, damaged_state):
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
+    assert command_succeeded(cli("update"))
+    (lake.manifest_dir / "clean_state.json").write_text(damaged_state)  # valid JSON, as a slip in a hand edit leaves it
+    for command in (("status",), ("verify",), ("update", "--dry-run"), ("update",)):
+        result = cli(*command)
+        assert command_refused(result), (command, result.output)
+
+
+def test_selection_that_matches_nothing_is_an_error_not_a_success(cli, upstream, lake):
+    upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
+    assert command_refused(cli("verify"))  # nothing is published yet
+    for dry_run_option in ((), ("--dry-run",)):
+        assert command_refused(cli("update", "--seasons", "2062", *dry_run_option))  # upstream has no such season
+    assert not lake.clean_dir.exists()
 
 
 def test_dry_run_exits_1_when_a_dataset_cannot_be_planned(make_cli, upstream, lake):

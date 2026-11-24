@@ -32,7 +32,7 @@ class _CurrentStderrHandler(logging.StreamHandler):
 
 
 def _configure_logging() -> None:
-    log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+    log_level = logging.getLevelNamesMapping().get(os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
     handler = _CurrentStderrHandler()
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%SZ")
     formatter.converter = time.gmtime  # UTC, like run ids and the manifest
@@ -53,9 +53,14 @@ def _open_source(catalog: Catalog, lake: LakeStore, *, dry_run: bool = False) ->
     local_source_dir = os.getenv("NFL_LAKE_SOURCE_DIR")
     if local_source_dir:
         return LocalDirSource(local_source_dir)
+    # A token read from a file often ends in a newline. Sent as it is, the HTTP library refuses the header and
+    # quotes the token in its error, so the value is cleaned here and never printed.
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if not (token.isascii() and token.isprintable() and " " not in token):
+        raise ValueError("GITHUB_TOKEN holds a space, a line break or another character a token cannot have")
     return GitHubReleasesSource(
         catalog.source.repo,
-        token=os.getenv("GITHUB_TOKEN") or None,
+        token=token or None,
         cache_path=lake.manifest_dir / "listing_cache.json",
         write_cache=not dry_run,
     )
@@ -272,7 +277,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--datasets", type=_parse_dataset_names, help="Comma-separated dataset names. Default: every dataset."
     )
     verify_parser.add_argument(
-        "--deep", action="store_true", help="Also re-hash every clean file and every raw snapshot."
+        "--deep", action="store_true", help="Also re-hash every clean file, set-aside file and raw snapshot."
     )
 
     add_command(
