@@ -459,6 +459,18 @@ def _rewrite_clean(lake: LakeStore, dataset_name: str, filename: str, *changes: 
     pl.read_parquet(clean_path).with_columns(*changes).write_parquet(clean_path)
 
 
+def _add_unplayed_game(lake: LakeStore, game_id: str) -> None:
+    """Put one more game on the schedule. A game not yet played needs no stats or plays, so no check minds it."""
+    sched_path = lake.clean_file_path("schedules", "games.parquet")
+    games = pl.read_parquet(sched_path)
+    unplayed_game = games.tail(1).with_columns(
+        pl.lit(game_id).alias("game_id"),
+        pl.lit(None, dtype=games.schema["home_score"]).alias("home_score"),
+        pl.lit(None, dtype=games.schema["away_score"]).alias("away_score"),
+    )
+    pl.concat([games, unplayed_game]).write_parquet(sched_path)
+
+
 def _hash_core_files(lake: LakeStore) -> dict[Path, str]:
     return {path: compute_file_sha256(path) for path in sorted(lake.core_dir.rglob("*.parquet"))}
 
@@ -555,6 +567,31 @@ def test_build_core_publishes_all_seven_tables_and_normalizes_sources(lake: Lake
     assert verify_core_tables(lake, deep=True) == (7, [])
 
 
+def test_dry_run_reports_what_a_build_would_change_and_publishes_nothing(lake: LakeStore, monkeypatch):
+    _populate_valid_clean_lake(lake)
+    monkeypatch.setenv("NFL_LAKE_ROOT", str(lake.root_dir))
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+
+    main(["build-core", "--dry-run"])
+    assert not lake.core_dir.exists() and lake.load_core_state() is None and not lake.staging_dir.exists()
+
+    build_core_tables(lake)
+    published = _hash_core_files(lake)
+    # Upstream corrects both stadium names and adds a game to the schedule.
+    _rewrite_clean(lake, "schedules", "games.parquet", pl.lit("Renamed Stadium").alias("stadium"))
+    _add_unplayed_game(lake, "2025_23_LAR_BUF")
+
+    summary = build_core_tables(lake, dry_run=True)
+
+    assert summary.changes is not None
+    changes = {change.table_name: change for change in summary.changes}
+    game_change = changes.pop("game")
+    assert (game_change.added_rows, game_change.removed_rows, game_change.changed_rows) == (1, 0, 2)
+    assert game_change.changed_columns == {"stadium": 2}
+    assert all(change.unchanged for change in changes.values())
+    assert not summary.published and _hash_core_files(lake) == published
+
+
 def test_build_core_blocks_publish_when_a_strategy_1_check_fails(lake: LakeStore):
     _populate_valid_clean_lake(lake)
     build_core_tables(lake)
@@ -602,15 +639,8 @@ def test_build_core_blocks_duplicate_pfr_bridge_id(lake: LakeStore):
 def test_pinned_anchor_game_without_its_pinned_player_row_blocks_the_build(lake: LakeStore):
     _populate_valid_clean_lake(lake)
     # Super Bowl LVIII is pinned to Patrick Mahomes's stat line. Here it is on the schedule as a game not yet
-    # played, which needs no stats or plays, so the missing pinned row is the only fault.
-    sched_path = lake.clean_file_path("schedules", "games.parquet")
-    games = pl.read_parquet(sched_path)
-    unplayed_anchor_game = games.tail(1).with_columns(
-        pl.lit("2023_22_SF_KC").alias("game_id"),
-        pl.lit(None, dtype=games.schema["home_score"]).alias("home_score"),
-        pl.lit(None, dtype=games.schema["away_score"]).alias("away_score"),
-    )
-    pl.concat([games, unplayed_anchor_game]).write_parquet(sched_path)
+    # played, so the missing pinned row is the only fault.
+    _add_unplayed_game(lake, "2023_22_SF_KC")
 
     with pytest.raises(CoreBuildFailed) as exc_info:
         build_core_tables(lake)

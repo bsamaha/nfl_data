@@ -14,6 +14,7 @@ from typing import NoReturn
 import yaml
 
 from .catalog import Catalog, load_catalog
+from .changes import format_table_change
 from .checks import format_check_outcome
 from .core import (
     CORE_TABLE_NAMES,
@@ -231,15 +232,20 @@ def _cmd_status(args: argparse.Namespace) -> None:
 
 
 def _cmd_build_core(args: argparse.Namespace) -> None:
-    del args
     lake = _open_lake()
-    summary = build_core_tables(lake)
-    print(f"{summary.run_id}: ok")
+    summary = build_core_tables(lake, dry_run=args.dry_run)
+    print(f"{summary.run_id}: ok" if summary.published else f"{summary.run_id}: ok (dry run, nothing published)")
     for table_name, row_count in summary.row_counts_by_table.items():
         print(f"  core/{table_name:<22}{row_count:>11,} rows")
     print(f"  checks: {len(summary.report.outcomes)} run, 0 errors, {len(summary.report.warnings)} warning(s)")
     for warning in summary.report.warnings:
         print(f"  WARN {format_check_outcome(warning)}")
+    if summary.changes is None:
+        print("  no published core tables to compare with")
+    else:
+        print("  against the core tables published before:")
+        for table_change in summary.changes:
+            print(f"    {format_table_change(table_change)}")
 
 
 def _cmd_verify(args: argparse.Namespace) -> None:
@@ -315,10 +321,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     update_parser.add_argument("--workers", type=_parse_workers, default=8, help="Parallel downloads (1-16).")
 
-    add_command(
+    build_core_parser = add_command(
         "build-core",
         _cmd_build_core,
         "Build the 7 normalized core tables into data/core/ behind Strategy 1 checks.",
+    )
+    build_core_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build and check the tables, show what would change against the published ones, and publish nothing.",
     )
 
     add_command(

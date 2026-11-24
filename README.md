@@ -44,7 +44,8 @@ The first run downloads every file in the catalog, about 600 MB as of November 2
 | `update --seasons 2015-2026` | Limit seasonal datasets to these seasons (`2026`, a range, or `2024,2026`) |
 | `update --datasets pbp,schedules` | Limit the run to these datasets |
 | `update --skip weekly_rosters` | Leave datasets out, e.g. to skip one that is broken upstream for a clean exit 0 |
-| `build-core` | Build the 7 normalized core tables into `data/core/`, gated by Strategy 1 publish-time checks |
+| `build-core` | Build the 7 normalized core tables into `data/core/`, gated by Strategy 1 publish-time checks, and show what changed against the tables published before |
+| `build-core --dry-run` | Build and check the core tables, show what would change, and publish nothing |
 | `status` | What is published per clean dataset and core table, how the last run ended, and whether the core tables are behind the clean layer |
 | `verify` | Re-check every published clean file and (when built) core table against keys and Strategy 1 checks, and report core tables built from an earlier clean layer; `--deep` also re-hashes every clean, set-aside, raw snapshot, and core file |
 | `unlock` | Clear the lock left by an update or core build that was killed |
@@ -91,6 +92,7 @@ uv run python -m nfl_lake build-core
 - **A clean file the build cannot use fails it the same way.** A file that cannot be read, or that has lost a column a core table selects (as after `update --accept-schema-change`), exits 1 with the table or check that needed it.
 - **A played game must be in every feed.** The build refuses while a game with a final score is missing from play-by-play, player stats, team stats or snap counts, and `data/core/` stays at its previous build. Expect that between a final score reaching the schedule and the next update of the other files; whether and for how long it happens has not been observed.
 - **Core does not follow `update` on its own.** Run `build-core` after an `update` that changed anything. Until then `status` says the core tables are behind and `verify` exits 1.
+- **Every build says what it changed.** After the checks, each table is compared on its key with the one published before: rows added, removed and changed, the columns the changed rows differ in, and columns that came or went. The checks decide whether a build publishes; this report is for you to read. `--dry-run` builds and checks the same way, prints the same report and publishes nothing. It holds the lock while it runs, because it builds in `data/_staging/`.
 
 ### Querying
 

@@ -26,7 +26,9 @@ from pathlib import Path
 
 import duckdb
 
+from .changes import TableChange, compare_table
 from .checks import (
+    CORE_TABLE_KEYS,
     NGS_WEEK_AS_SCHEDULE_WEEK,
     CheckReport,
     build_clean_health_checks,
@@ -102,6 +104,9 @@ class CoreBuildSummary:
     run_id: str
     row_counts_by_table: dict[str, int]
     report: CheckReport
+    published: bool  # False after a dry run
+    # Each table against the one published before the build, or None when there was nothing to compare with.
+    changes: list[TableChange] | None
 
 
 def _norm_team(column_expr: str) -> str:
@@ -715,8 +720,35 @@ def _publish_staged_core(lake: LakeStore, staged_core_dir: Path, core_state: Cor
     lake.save_core_state(core_state)
 
 
-def build_core_tables(lake: LakeStore) -> CoreBuildSummary:
-    """Build all 7 core tables into staging, run Strategy 1 checks, and publish only if all errors pass."""
+def _compare_with_published(
+    connection: duckdb.DuckDBPyConnection, lake: LakeStore, staged_core_dir: Path
+) -> list[TableChange] | None:
+    """What publishing the staged tables would change. A comparison that cannot be made never stops a build:
+    rebuilding is the remedy for a published file that cannot be read."""
+    if not lake.core_dir.exists():
+        return None
+    try:
+        return [
+            compare_table(
+                connection,
+                table_name,
+                CORE_TABLE_KEYS[table_name],
+                _list_table_files(lake.core_dir, table_name),
+                _list_table_files(staged_core_dir, table_name),
+            )
+            for table_name in CORE_TABLE_NAMES
+        ]
+    except duckdb.Error as error:
+        logger.warning("the published core tables could not be compared: %s", str(error).partition("\n")[0])
+        return None
+
+
+def build_core_tables(lake: LakeStore, *, dry_run: bool = False) -> CoreBuildSummary:
+    """Build all 7 core tables into staging, run Strategy 1 checks, and publish only if all errors pass.
+
+    A dry run builds and checks the same way and stops before publishing. It holds the lock while it runs,
+    because it builds in the lake's staging folder.
+    """
     started_at = utc_now()
     run_id = f"core_{started_at:%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:4]}"
     staged_core_dir = lake.staging_dir / run_id / "core"
@@ -744,6 +776,9 @@ def build_core_tables(lake: LakeStore) -> CoreBuildSummary:
                     logger.info("staged core/%s (%d rows)", table_name, row_counts[table_name])
 
                 core_report = run_checks(connection, build_core_checks(staged_core_dir, lake.clean_dir))
+                table_changes = (
+                    _compare_with_published(connection, lake, staged_core_dir) if core_report.passed else None
+                )
             finally:
                 connection.close()
 
@@ -752,6 +787,8 @@ def build_core_tables(lake: LakeStore) -> CoreBuildSummary:
                 logger.warning("%s", format_check_outcome(warning))
             if not core_report.passed:
                 raise CoreBuildFailed([format_check_outcome(err) for err in core_report.errors], combined_report)
+            if dry_run:
+                return CoreBuildSummary(run_id, row_counts, combined_report, published=False, changes=table_changes)
 
             core_state = CoreState(
                 run_id=run_id,
@@ -771,7 +808,7 @@ def build_core_tables(lake: LakeStore) -> CoreBuildSummary:
                 },
             )
             _publish_staged_core(lake, staged_core_dir, core_state)
-            return CoreBuildSummary(run_id=run_id, row_counts_by_table=row_counts, report=combined_report)
+            return CoreBuildSummary(run_id, row_counts, combined_report, published=True, changes=table_changes)
         finally:
             shutil.rmtree(lake.staging_dir, ignore_errors=True)
 

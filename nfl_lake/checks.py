@@ -51,6 +51,16 @@ CURRENT_TEAM_CODES = (
     "WAS",
 )
 _TEAM_SQL_LIST = ", ".join(f"'{code}'" for code in CURRENT_TEAM_CODES)
+# The columns that identify a row of each core table.
+CORE_TABLE_KEYS = {
+    "game": ("game_id",),
+    "team_game": ("game_id", "team"),
+    "player": ("gsis_id",),
+    "player_game": ("game_id", "player_id"),
+    "play": ("game_id", "play_id"),
+    "player_week_status": ("season", "week", "team", "gsis_id"),
+    "depth_chart_snapshot": ("dt", "team", "pos_id", "pos_rank"),
+}
 _HISTORICAL_PLAYLESS_GAMES = "'1999_01_BAL_STL', '2000_03_SD_KC', '2000_06_BUF_MIA'"
 # The first season in which every cross-source identity holds with no exception; section 6 of
 # docs/DATA_VERIFICATION.md gives the measurements.
@@ -327,6 +337,15 @@ def build_core_checks(core_dir: Path, clean_dir: Path) -> list[DataCheck]:
     play = sql_path(core_dir / "play" / "*.parquet")
     status = sql_path(core_dir / "player_week_status.parquet")
     depth = sql_path(core_dir / "depth_chart_snapshot.parquet")
+    table_paths = {
+        "game": game,
+        "team_game": team_game,
+        "player": player,
+        "player_game": player_game,
+        "play": play,
+        "player_week_status": status,
+        "depth_chart_snapshot": depth,
+    }
 
     clean_schedules = sql_path(clean_dir / "schedules" / "games.parquet")
     clean_players = sql_path(clean_dir / "players" / "players.parquet")
@@ -344,48 +363,16 @@ def build_core_checks(core_dir: Path, clean_dir: Path) -> list[DataCheck]:
             name="core_keys_unique",
             severity="error",
             description="Primary keys are unique and non-null on all 7 core tables",
-            query=f"""
-                SELECT 'game' AS table_name, count(*) - count(DISTINCT game_id) AS dups,
-                       count(*) FILTER (WHERE game_id IS NULL) AS nulls
-                FROM read_parquet('{game}')
+            query=" UNION ALL ".join(
+                f"""
+                SELECT '{table_name}' AS table_name,
+                       count(*) - count(DISTINCT ({", ".join(key_columns)})) AS dups,
+                       count(*) FILTER (WHERE {" OR ".join(f"{column} IS NULL" for column in key_columns)}) AS nulls
+                FROM read_parquet('{table_paths[table_name]}')
                 HAVING dups > 0 OR nulls > 0
-                UNION ALL
-                SELECT 'team_game', count(*) - count(DISTINCT (game_id, team)),
-                       count(*) FILTER (WHERE game_id IS NULL OR team IS NULL)
-                FROM read_parquet('{team_game}')
-                HAVING count(*) - count(DISTINCT (game_id, team)) > 0
-                    OR count(*) FILTER (WHERE game_id IS NULL OR team IS NULL) > 0
-                UNION ALL
-                SELECT 'player', count(*) - count(DISTINCT gsis_id),
-                       count(*) FILTER (WHERE gsis_id IS NULL)
-                FROM read_parquet('{player}')
-                HAVING count(*) - count(DISTINCT gsis_id) > 0
-                    OR count(*) FILTER (WHERE gsis_id IS NULL) > 0
-                UNION ALL
-                SELECT 'player_game', count(*) - count(DISTINCT (game_id, player_id)),
-                       count(*) FILTER (WHERE game_id IS NULL OR player_id IS NULL)
-                FROM read_parquet('{player_game}')
-                HAVING count(*) - count(DISTINCT (game_id, player_id)) > 0
-                    OR count(*) FILTER (WHERE game_id IS NULL OR player_id IS NULL) > 0
-                UNION ALL
-                SELECT 'play', count(*) - count(DISTINCT (game_id, play_id)),
-                       count(*) FILTER (WHERE game_id IS NULL OR play_id IS NULL)
-                FROM read_parquet('{play}')
-                HAVING count(*) - count(DISTINCT (game_id, play_id)) > 0
-                    OR count(*) FILTER (WHERE game_id IS NULL OR play_id IS NULL) > 0
-                UNION ALL
-                SELECT 'player_week_status', count(*) - count(DISTINCT (season, week, team, gsis_id)),
-                       count(*) FILTER (WHERE season IS NULL OR week IS NULL OR team IS NULL OR gsis_id IS NULL)
-                FROM read_parquet('{status}')
-                HAVING count(*) - count(DISTINCT (season, week, team, gsis_id)) > 0
-                    OR count(*) FILTER (WHERE season IS NULL OR week IS NULL OR team IS NULL OR gsis_id IS NULL) > 0
-                UNION ALL
-                SELECT 'depth_chart_snapshot', count(*) - count(DISTINCT (dt, team, pos_id, pos_rank)),
-                       count(*) FILTER (WHERE dt IS NULL OR team IS NULL OR pos_id IS NULL OR pos_rank IS NULL)
-                FROM read_parquet('{depth}')
-                HAVING count(*) - count(DISTINCT (dt, team, pos_id, pos_rank)) > 0
-                    OR count(*) FILTER (WHERE dt IS NULL OR team IS NULL OR pos_id IS NULL OR pos_rank IS NULL) > 0
-            """,
+                """
+                for table_name, key_columns in CORE_TABLE_KEYS.items()
+            ),
         ),
         DataCheck(
             name="core_zero_join_fanout",
