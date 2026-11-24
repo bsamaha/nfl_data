@@ -160,7 +160,11 @@ class GitHubReleasesSource:
         backoff_seconds: float = 2.0,
         cache_path: Path | None = None,
         write_cache: bool = True,
+        open_url: Callable = urllib.request.urlopen,
     ):
+        # `open_url` performs every HTTP request. The tests pass one that answers from memory, because a rate limit
+        # or a dropped connection cannot be produced on demand.
+        self._open_url = open_url
         self.repo = repo
         self.token = token
         self.max_attempts = max_attempts
@@ -222,7 +226,7 @@ class GitHubReleasesSource:
         """Perform one HTTP request. A rate limit or any status below 500 is final, so it becomes a SourceError here."""
         with _network():
             try:
-                return urllib.request.urlopen(request, timeout=120)
+                return self._open_url(request, timeout=120)
             except urllib.error.HTTPError as http_error:
                 headers = http_error.headers or {}
                 http_code = http_error.code

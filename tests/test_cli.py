@@ -1,5 +1,6 @@
 """The command line: exit codes and what ends up on disk. A scheduled job acts on the exit code."""
 
+import contextlib
 import io
 from dataclasses import dataclass
 
@@ -79,12 +80,11 @@ def test_update_publishes_where_the_readme_says_and_a_dry_run_writes_nothing(cli
     assert [run["fetched"] for run in lake.load_run_records()] == [1, 0]
 
 
-def test_progress_still_reaches_stderr_after_a_command_has_finished(cli, upstream, lake, monkeypatch, capsys):
+def test_progress_still_reaches_stderr_after_a_command_has_finished(cli, upstream, lake, capsys):
     upstream.put("stats_player", STATS_FILENAME, make_stats_frame())
     # Configure logging while sys.stderr is a temporary stream that closes right after the command.
     temporary_stderr = io.StringIO()
-    with monkeypatch.context() as patch:
-        patch.setattr("sys.stderr", temporary_stderr)
+    with contextlib.redirect_stderr(temporary_stderr):
         assert command_succeeded(cli("update", "--dry-run"))
     temporary_stderr.close()
 

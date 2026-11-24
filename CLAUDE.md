@@ -12,7 +12,7 @@ A local lake of nflverse files. `README.md` is the manual (commands, guarantees,
 ## Rules
 
 - Keep the repo small. Add a file, dependency, option or helper only when something needs it now, and delete what nothing uses.
-- Tests assert outcomes: files on disk, which files were fetched or rebuilt, counts, exit codes. They never assert message wording or log format, and they patch nothing except `urlopen` in `tests/test_source_github.py`.
+- Tests assert outcomes: files on disk, which files were fetched or rebuilt, counts, exit codes. They never assert message wording or log format, and they patch nothing: the GitHub source takes the function that performs its HTTP requests as an argument, and `tests/test_source_github.py` passes one that answers from memory.
 - Check a change to ingest on real files as well: point `NFL_LAKE_ROOT` at a scratch folder and run `update --datasets injuries --seasons 2026`.
 - Check a change to the core tables on the real lake as well: run `build-core --dry-run` and read its change report. A row or column that changed without a reason you can name is a bug.
 - Use the newest Python and package versions; hold one back only for a reason you have tested.

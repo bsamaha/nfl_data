@@ -57,7 +57,7 @@ def _open_lake() -> LakeStore:
     return LakeStore(os.getenv("NFL_LAKE_ROOT") or "data")
 
 
-def _open_source(catalog: Catalog, lake: LakeStore, *, dry_run: bool = False) -> UpstreamSource:
+def open_source(catalog: Catalog, lake: LakeStore, *, dry_run: bool = False) -> UpstreamSource:
     """Upstream source: NFL_LAKE_SOURCE_DIR reads a local mirror instead of GitHub."""
     local_source_dir = os.getenv("NFL_LAKE_SOURCE_DIR")
     if local_source_dir:
@@ -146,7 +146,7 @@ def _cmd_update(args: argparse.Namespace) -> None:
         None if args.datasets is None and args.skip is None else [dataset.name for dataset in selected_datasets]
     )
     lake = _open_lake()
-    source = _open_source(catalog, lake, dry_run=args.dry_run)
+    source = open_source(catalog, lake, dry_run=args.dry_run)
     summary = run_update(
         catalog,
         source,
