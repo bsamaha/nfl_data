@@ -65,11 +65,6 @@ def canned_opener(respond):
     return open_url, recorded_requests
 
 
-class DroppedMidFileResponse(io.BytesIO):
-    def read(self, *args):
-        raise ConnectionResetError("connection reset by peer")
-
-
 class IncompleteReadResponse(io.BytesIO):
     def read(self, *args):
         raise http.client.IncompleteRead(b"")
@@ -175,7 +170,6 @@ def test_rate_limit_is_final():
     "first_response",
     [
         raise_connection_refused,
-        DroppedMidFileResponse,
         IncompleteReadResponse,
         NetworkGoneResponse,
         lambda: io.BytesIO(SAMPLE_PARQUET_BYTES[:4]),
@@ -183,7 +177,6 @@ def test_rate_limit_is_final():
     ],
     ids=[
         "connection refused",
-        "dropped mid-file",
         "incomplete read",
         "network gone mid-file",
         "body ends early",

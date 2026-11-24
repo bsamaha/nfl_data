@@ -27,7 +27,6 @@ def test_repo_catalog_loads_and_no_two_datasets_read_the_same_file():
         ("stats", {**STATS_DATASET_SPEC, "key": ["player_id", "player_id"]}),
         ("stats", {**SINGLE_FILE_SPEC, "file": "../escape.parquet"}),
         ("stats", {**SINGLE_FILE_SPEC, "release": "bad/release"}),
-        ("Player_stats", STATS_DATASET_SPEC),
         ("player-stats", STATS_DATASET_SPEC),
         ("2024_stats", STATS_DATASET_SPEC),
     ],
@@ -41,7 +40,6 @@ def test_repo_catalog_loads_and_no_two_datasets_read_the_same_file():
         "key column twice",
         "path in file",
         "slash in release",
-        "upper case name",
         "hyphen in name",
         "name starts with a digit",
     ],
@@ -55,13 +53,6 @@ def test_invalid_entry_is_rejected(dataset_name, dataset_spec):
 def test_repo_that_is_not_owner_and_name_is_rejected():
     with pytest.raises(ValidationError):
         Catalog.model_validate({"source": {"repo": "nflverse-data"}, "datasets": {"one": SINGLE_FILE_SPEC}})
-
-
-def test_file_matching_is_exact():
-    dataset = build_catalog(stats=STATS_DATASET_SPEC).get_dataset("stats")
-    assert dataset.match_asset_filename("stats_player_week_2024.parquet") == (True, 2024)
-    assert dataset.match_asset_filename("stats_player_week_2024.csv") == (False, None)
-    assert dataset.match_asset_filename("old_stats_player_week_2024.parquet") == (False, None)
 
 
 def test_select_takes_none_for_all_and_refuses_unknown_names():

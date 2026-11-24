@@ -148,15 +148,12 @@ def test_bad_arguments_are_refused(cli, upstream, lake):
         (),
         ("update", "--dry"),
         ("update", "--seasons", "last-year"),
-        ("update", "--seasons", "2025-2024"),
-        ("update", "--seasons", "2020-20260"),
-        ("update", "--seasons", ","),
         ("update", "--datasets", ","),
         ("update", "--skip", " "),
         ("update", "--workers", "0"),
         ("verify", "--datasets", ","),
     ]
-    # no command, a shortened option, not a season, a reversed range, out-of-range workers, and empty options
+    # no command, a shortened option, not a season, out-of-range workers, and empty options
     for args in invalid_invocations:
         result = cli(*args)
         assert command_refused(result, exit_code=2), (args, result.output)
@@ -166,17 +163,13 @@ def test_bad_arguments_are_refused(cli, upstream, lake):
     assert lake.load_run_records() == [] and not lake.clean_dir.exists()  # a typo is not a run
 
 
-@pytest.mark.parametrize(
-    "seasons_arg, expected_seasons",
-    [("2025", {2025}), ("2024-2025", {2024, 2025}), ("2023,2025", {2023, 2025})],
-)
-def test_seasons_option_limits_the_run(cli, upstream, lake, seasons_arg, expected_seasons):
+def test_seasons_option_limits_the_run(cli, upstream, lake):
     for season in (2023, 2024, 2025):
         upstream.put("stats_player", f"stats_player_week_{season}.parquet", make_stats_frame())
-    result = cli("update", "--seasons", seasons_arg)
+    result = cli("update", "--seasons", "2023,2025")  # test_properties.py covers every way to write the option
     assert command_succeeded(result), result.output
     published_filenames = {path.name for path in (lake.clean_dir / "stats").iterdir()}
-    assert published_filenames == {f"stats_player_week_{season}.parquet" for season in expected_seasons}
+    assert published_filenames == {"stats_player_week_2023.parquet", "stats_player_week_2025.parquet"}
 
 
 def test_datasets_and_skip_options_limit_the_run(make_cli, upstream, lake):

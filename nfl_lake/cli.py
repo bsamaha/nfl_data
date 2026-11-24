@@ -83,7 +83,7 @@ def _parse_dataset_names(raw_value: str) -> list[str]:
     return dataset_names
 
 
-def _parse_season_filter(raw_value: str) -> set[int]:
+def parse_season_filter(raw_value: str) -> set[int]:
     seasons: set[int] = set()
     try:
         for token in raw_value.split(","):
@@ -306,7 +306,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     update_parser.add_argument(
         "--seasons",
-        type=_parse_season_filter,
+        type=parse_season_filter,
         help="Seasons to consider: 2026, 2015-2026 or 2024,2026. Default: all.",
     )
     update_parser.add_argument(

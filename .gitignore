@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
+.hypothesis/
 
 # Local settings, passed with `uv run --env-file .env`
 .env

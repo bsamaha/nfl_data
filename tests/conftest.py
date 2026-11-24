@@ -8,10 +8,15 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from hypothesis import settings
 
 from nfl_lake.catalog import Catalog
 from nfl_lake.source import LocalDirSource
 from nfl_lake.store import LakeStore
+
+# Hypothesis fails an example that runs long. The first polars call in a process does, so the limit is off.
+settings.register_profile("nfl_lake", deadline=None)
+settings.load_profile("nfl_lake")
 
 
 class FakeUpstream:

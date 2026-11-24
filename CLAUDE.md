@@ -4,7 +4,7 @@ A local lake of nflverse files. `README.md` is the manual (commands, guarantees,
 
 ## Commands
 
-- `uv sync`, then `uv run pytest`. No test touches the network; the suite takes about two seconds.
+- `uv sync`, then `uv run pytest`. No test touches the network; the suite takes about ten seconds.
 - `uv run ruff format` and `uv run ruff check` before every commit.
 - `uv run python -m nfl_lake update --dry-run` shows what a run would fetch and rebuild without writing anything.
 - `uv run python -m nfl_lake build-core --dry-run` builds and checks the core tables from the real clean layer, prints what would change against the published ones, and publishes nothing.
@@ -13,6 +13,7 @@ A local lake of nflverse files. `README.md` is the manual (commands, guarantees,
 
 - Keep the repo small. Add a file, dependency, option or helper only when something needs it now, and delete what nothing uses.
 - Tests assert outcomes: files on disk, which files were fetched or rebuilt, counts, exit codes. They never assert message wording or log format, and they patch nothing: the GitHub source takes the function that performs its HTTP requests as an argument, and `tests/test_source_github.py` passes one that answers from memory.
+- Test a promise through the command or function a user calls. For a part that only computes (key rules, option parsing, file matching), write a Hypothesis property in `tests/test_properties.py` instead of a list of examples.
 - Check a change to ingest on real files as well: point `NFL_LAKE_ROOT` at a scratch folder and run `update --datasets injuries --seasons 2026`.
 - Check a change to the core tables on the real lake as well: run `build-core --dry-run` and read its change report. A row or column that changed without a reason you can name is a bug.
 - Use the newest Python and package versions; hold one back only for a reason you have tested.
