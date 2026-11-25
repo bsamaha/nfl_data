@@ -8,6 +8,10 @@ __pycache__/
 # Local settings, passed with `uv run --env-file .env`
 .env
 
+# Claude Code session worktrees and personal settings
+.claude/worktrees/
+.claude/settings.local.json
+
 # The lake, and data files anywhere
 /data/
 *.parquet
