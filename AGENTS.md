@@ -5,8 +5,16 @@ A local lake of nflverse files. `README.md` is the manual (commands, guarantees,
 ## Before you change anything
 
 - Two agents work on this repo. Run `git status -sb` first. If the tree holds changes you did not make, or the branch is not the one you expect, stop and tell the user. Do not switch branches, stash or reset in a checkout that holds another agent's work.
-- Work in your own working copy where you can, for example `git worktree add ../nfl_data-gemini -b gemini/<task> master`. A new worktree needs its own `uv sync`. Its `data/` is empty, so set `NFL_LAKE_ROOT` to the main checkout's `data` folder to read the real lake.
-- Work on a branch named `claude/<task>` or `gemini/<task>`, made from `master`. The commit hook refuses commits on `master`. Merging into `master`, pushing and deleting a branch each need the user's go-ahead.
+- Each agent works only in its own folder:
+  - Gemini works in the worktree `nfl_data-gemini`, next to the main checkout.
+  - Claude sessions work in the worktrees the app makes under `.claude/worktrees/`.
+  - The main checkout `nfl_data` stays on `master` and is where merges happen. Do not edit files there unless the user asks you to merge.
+  - A worktree needs its own `uv sync`. Its `data/` is empty, so set `NFL_LAKE_ROOT` to the main checkout's `data` folder to read the real lake.
+- All folders share one git history, so a commit made in one is visible at once in the others. Your folder's files do not change when `master` does.
+- `master` is checked out in the main checkout, so `git switch master` fails in a worktree. Do not work around that by moving to another folder.
+- Start each task on a new branch from the latest `master`: `git switch -c gemini/<task> master` (or `claude/<task>`). To continue a task after `master` moved, run `git merge master` first.
+- When asked to review recent commits, review `master` (`git log master`) or the branch the user names, not your own folder's branch.
+- The commit hook refuses commits on `master`. Merging into `master`, pushing and deleting a branch each need the user's go-ahead.
 - Commit your own work before you stop or hand off. The body says what changed and why, then a `Checked:` line names what you ran. End with a `Co-Authored-By:` trailer that names you and your model, so a reader can tell which agent wrote what.
 - To commit another agent's uncommitted work, commit it unchanged first and say whose it is, then put your changes in a second commit.
 
