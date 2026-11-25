@@ -1,4 +1,4 @@
-"""Reusable Strategy 1 publish-time checkbook runner and Stage 3 / Stage 4 rules.
+"""The DuckDB check runner, and the checks on the clean layer and the core tables that gate a publish.
 
 Every check is a DuckDB SQL query that returns failing rows (0 rows = pass). Hard rules (`error`) block
 publishing; soft rules (`warn`) report anomalies without blocking the build. Rules and thresholds come from
@@ -163,7 +163,7 @@ def format_check_outcome(outcome: CheckOutcome) -> str:
 
 
 def build_clean_health_checks(clean_dir: Path) -> list[DataCheck]:
-    """Stage 3 cross-dataset health checks across `data/clean/`."""
+    """Health checks across the datasets in `data/clean/`."""
     sched = sql_path(clean_dir / "schedules" / "games.parquet")
     pbp = sql_path(clean_dir / "pbp" / "*.parquet")
     player_stats = sql_path(clean_dir / "stats_player_week" / "*.parquet")
@@ -329,7 +329,7 @@ def build_clean_health_checks(clean_dir: Path) -> list[DataCheck]:
 
 
 def build_core_checks(core_dir: Path, clean_dir: Path) -> list[DataCheck]:
-    """Stage 4 publish-time Strategy 1 checkbook rules against staged or published `core/` tables."""
+    """The checks a core build must pass, run against staged or published `core/` tables."""
     game = sql_path(core_dir / "game.parquet")
     team_game = sql_path(core_dir / "team_game.parquet")
     player = sql_path(core_dir / "player.parquet")
@@ -547,7 +547,7 @@ def build_core_checks(core_dir: Path, clean_dir: Path) -> list[DataCheck]:
                 HAVING median(hour(eastern) + minute(eastern) / 60.0) NOT BETWEEN 13 AND 18
             """,
         ),
-        # 3. Cross-source checkbook identities -------------------------------------------------------
+        # 3. Totals that must agree across sources -------------------------------------------------------
         DataCheck(
             name="core_pass_td_equals_rec_td",
             severity="error",

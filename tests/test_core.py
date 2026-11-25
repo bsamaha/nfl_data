@@ -1,4 +1,4 @@
-"""Stage 4 core tables: what build-core publishes, what blocks it, and what verify reports. No network."""
+"""Core tables: what build-core publishes, what blocks it, and what verify reports. No network."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import polars as pl
 import pytest
 
 from nfl_lake.cli import main
-from nfl_lake.core import CoreBuildFailed, build_core_tables, verify_core_tables
+from nfl_lake.core import CoreBuildFailed, build_core_tables, core_was_built_by_this_code, verify_core_tables
 from nfl_lake.source import compute_file_sha256
 from nfl_lake.store import LakeLocked, LakeStore
 
@@ -749,7 +749,7 @@ def test_build_core_blocks_a_player_without_a_stat_line_listed_under_the_other_t
     assert {outcome.name for outcome in exc_info.value.report.errors} == {"core_full_time_offense_one_snap_count"}
 
 
-def test_build_core_blocks_publish_when_a_strategy_1_check_fails(lake: LakeStore):
+def test_build_core_blocks_publish_when_a_check_fails(lake: LakeStore):
     _populate_valid_clean_lake(lake)
     build_core_tables(lake)
     published = _hash_core_files(lake)
@@ -926,6 +926,16 @@ def test_cli_build_core_exits_0_when_healthy_and_1_when_blocked(lake: LakeStore,
     with pytest.raises(SystemExit) as exit_info:
         main(["build-core"])
     assert exit_info.value.code == 1
+
+
+def test_a_core_built_by_other_code_is_told_apart(lake: LakeStore):
+    _populate_valid_clean_lake(lake)
+    build_core_tables(lake)
+    assert core_was_built_by_this_code(lake.load_core_state())
+
+    lake.save_core_state(lake.load_core_state().model_copy(update={"code_sha256": "0" * 64}))
+
+    assert not core_was_built_by_this_code(lake.load_core_state())
 
 
 def test_core_state_in_the_form_an_earlier_build_core_wrote_is_refused(lake: LakeStore):

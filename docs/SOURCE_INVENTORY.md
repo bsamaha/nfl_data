@@ -184,7 +184,7 @@ Seasons compared across the other sources: 2015, 2019 and 2025. In 2019 the same
 
 ## Core tables
 
-Built into `data/core/` by `python -m nfl_lake build-core`, gated by Strategy 1 publish-time checks (`docs/DATA_VERIFICATION.md`):
+Built into `data/core/` by `python -m nfl_lake build-core`, gated by publish-time checks (`docs/DATA_VERIFICATION.md`):
 
 | Table | Key | Built from |
 |---|---|---|
@@ -200,6 +200,6 @@ Week-based depth charts and weekly rosters before 2016 need a deduplication rule
 
 ## Open questions
 
-- Exact DraftKings rules for 2026: `docs/DATA_VERIFICATION.md` proved that `stats_player_week.fantasy_points_ppr` does **not** match DraftKings scoring (exact differences: missing `+3` yardage bonuses, `-2` vs `-1` on INTs and fumbles lost, return fumbles excluded from component fumbles, and offensive fumble-recovery TDs excluded). Before Stage 6, re-verify `catalog/draftkings.yml` against the 2026 DraftKings rules page — specifically whether PATs after opponent pick-sixes count against DST points allowed and whether return fumbles lost score `-1` for offensive players.
+- Exact DraftKings rules for 2026: `docs/DATA_VERIFICATION.md` proved that `stats_player_week.fantasy_points_ppr` does **not** match DraftKings scoring (exact differences: missing `+3` yardage bonuses, `-2` vs `-1` on INTs and fumbles lost, return fumbles excluded from component fumbles, and offensive fumble-recovery TDs excluded). Before building projections, re-verify `catalog/draftkings.yml` against the 2026 DraftKings rules page — specifically whether PATs after opponent pick-sixes count against DST points allowed and whether return fumbles lost score `-1` for offensive players.
 - What update schedule to rely on. On 21 Nov 2026 files were updated between 14:00 and 17:00 UTC and again after 22:00 UTC. The schedule nflverse states was not checked.
-- How far back the training window should go. Five sources start between 2013 and 2022 (see the table), and `docs/DATA_VERIFICATION.md` shows `2016–2026` is 100% clean across every cross-source checkbook identity while `1999–2015` has upstream gaps (missing `1999` gametimes, three `1999–2000` play-less games, missing `2001–2002` JAX team rows, and `2002–2008` missing targets).
+- How far back the training window should go. Five sources start between 2013 and 2022 (see the table), and `docs/DATA_VERIFICATION.md` shows `2016–2026` is 100% clean across every cross-source total while `1999–2015` has upstream gaps (missing `1999` gametimes, three `1999–2000` play-less games, missing `2001–2002` JAX team rows, and `2002–2008` missing targets).

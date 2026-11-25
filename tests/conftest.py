@@ -4,6 +4,8 @@ The tests check what a run did: which files are on disk, what was fetched and bu
 None of them matches the wording of a message, so each bad input has exactly one fault.
 """
 
+import os
+import sys
 from pathlib import Path
 
 import polars as pl
@@ -17,6 +19,41 @@ from nfl_lake.store import LakeStore
 # Hypothesis fails an example that runs long. The first polars call in a process does, so the limit is off.
 settings.register_profile("nfl_lake", deadline=None)
 settings.load_profile("nfl_lake")
+
+# Settings from the shell would point a test at the real lake or change what it logs. A test that needs one sets it.
+for setting_name in ("NFL_LAKE_ROOT", "NFL_LAKE_SOURCE_DIR", "LOG_LEVEL", "GITHUB_TOKEN"):
+    os.environ.pop(setting_name, None)
+
+LOCAL_HOSTS = {None, "localhost", "127.0.0.1", "::1", b"localhost", b"127.0.0.1"}
+network_attempts: list[str] = []
+
+
+def refuse_network(event: str, args: tuple) -> None:
+    """No test reaches the network: a test that needs HTTP answers passes GitHubReleasesSource an open_url.
+
+    The refusal is a RuntimeError, not an OSError, so the source does not retry it as a network blip.
+    """
+    if event == "socket.getaddrinfo":
+        host = args[0]
+    elif event == "socket.connect":
+        address = args[1]
+        host = address[0] if isinstance(address, tuple) else address
+    else:
+        return
+    if host not in LOCAL_HOSTS:
+        network_attempts.append(str(host))
+        raise RuntimeError(f"tests do not reach the network ({host})")
+
+
+sys.addaudithook(refuse_network)
+
+
+@pytest.fixture(autouse=True)
+def no_network_reached():
+    """Fails the test even when the code under test catches the refused connection and carries on."""
+    network_attempts.clear()
+    yield
+    assert not network_attempts, f"the test tried to reach {sorted(set(network_attempts))}"
 
 
 class FakeUpstream:

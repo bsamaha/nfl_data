@@ -3,7 +3,7 @@
 <root>/raw/<dataset>/<file stem>/<upstream time>_<sha12>.parquet   raw snapshots, kept only for `history: all` datasets
 <root>/clean/<dataset>/<file name>                                 latest version, contract applied
 <root>/rejects/<dataset>/<file name>                               rows set aside for a null key
-<root>/core/                                                       Stage 4 joined, normalized core tables
+<root>/core/                                                       joined, normalized core tables
 <root>/manifest/clean_state.json                                   what each clean file was built from
 <root>/manifest/core_state.json                                    the published core build: tables, checksums, clean inputs
 <root>/manifest/listing_cache.json                                 cached GitHub release pages with ETags
@@ -66,6 +66,7 @@ class CoreState(_CoreRecord):
     built_at: str
     clean_inputs: dict[str, str]  # every clean file the build read: path under the lake folder -> SHA-256
     tables: dict[str, CoreTableRecord]
+    code_sha256: str = ""  # of the nfl_lake code that built it; empty in a core built before this was recorded
 
 
 def utc_now() -> datetime:

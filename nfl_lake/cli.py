@@ -20,6 +20,7 @@ from .core import (
     CORE_TABLE_NAMES,
     CoreBuildFailed,
     build_core_tables,
+    core_was_built_by_this_code,
     list_changed_clean_inputs,
     verify_core_tables,
 )
@@ -229,6 +230,8 @@ def _cmd_status(args: argparse.Namespace) -> None:
         changed_inputs = list_changed_clean_inputs(lake, core_state)
         if changed_inputs:
             print(f"core is behind clean: {len(changed_inputs)} clean file(s) changed since; run build-core")
+        if not core_was_built_by_this_code(core_state):
+            print("core was built by other nfl_lake code than this checkout's; build-core --dry-run shows what changes")
 
 
 def _cmd_build_core(args: argparse.Namespace) -> None:
@@ -324,7 +327,7 @@ def _build_parser() -> argparse.ArgumentParser:
     build_core_parser = add_command(
         "build-core",
         _cmd_build_core,
-        "Build the 7 normalized core tables into data/core/ behind Strategy 1 checks.",
+        "Build the 7 normalized core tables into data/core/, publishing only if every check passes.",
     )
     build_core_parser.add_argument(
         "--dry-run",
@@ -339,7 +342,7 @@ def _build_parser() -> argparse.ArgumentParser:
     verify_parser = add_command(
         "verify",
         _cmd_verify,
-        "Re-check every published clean file and (when built) core table: present, row count, keys, and Strategy 1 checks.",
+        "Re-check every published clean file and (when built) core table: present, row count, keys, and the core checks.",
     )
     verify_parser.add_argument(
         "--datasets", type=_parse_dataset_names, help="Comma-separated dataset names. Default: every dataset."

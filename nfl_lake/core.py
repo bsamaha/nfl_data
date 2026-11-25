@@ -1,4 +1,4 @@
-"""Stage 4: build the 7 normalized core tables into `data/core/` behind Strategy 1 publish-time checks.
+"""Build the 7 normalized core tables into `data/core/`, publishing only if every check passes.
 
 Tables built from `data/clean/`:
 - `game.parquet`                  key: game_id
@@ -9,13 +9,14 @@ Tables built from `data/clean/`:
 - `player_week_status.parquet`    key: season, week, team, gsis_id (2016+)
 - `depth_chart_snapshot.parquet`  key: dt, team, pos_id, pos_rank (2025+)
 
-Every table is built into `_staging/<run_id>/core/` first. Only if every Strategy 1 `error` check passes is that
+Every table is built into `_staging/<run_id>/core/` first. Only if every `error` check passes is that
 folder swapped in for `core/` as a whole and recorded in `manifest/core_state.json`, together with the checksum of
 every clean file the build read.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -731,6 +732,19 @@ def list_changed_clean_inputs(lake: LakeStore, core_state: CoreState) -> list[st
     )
 
 
+def hash_lake_code() -> str:
+    """One SHA-256 over the `nfl_lake` modules, the same in every checkout of the same code."""
+    digest = hashlib.sha256()
+    for module_path in sorted(Path(__file__).parent.glob("*.py")):
+        digest.update(module_path.name.encode() + b"\0" + module_path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    return digest.hexdigest()
+
+
+def core_was_built_by_this_code(core_state: CoreState) -> bool:
+    """False when the published core tables came from other `nfl_lake` code, so a build now could publish others."""
+    return core_state.code_sha256 == hash_lake_code()
+
+
 def _publish_staged_core(lake: LakeStore, staged_core_dir: Path, core_state: CoreState) -> None:
     """Swap the staged folder in for core/ as a whole, so that core/ never holds tables from two builds.
 
@@ -782,7 +796,7 @@ def _compare_with_published(
 
 
 def build_core_tables(lake: LakeStore, *, dry_run: bool = False) -> CoreBuildSummary:
-    """Build all 7 core tables into staging, run Strategy 1 checks, and publish only if all errors pass.
+    """Build all 7 core tables into staging, run the checks, and publish only if all errors pass.
 
     A dry run builds and checks the same way and stops before publishing. It holds the lock while it runs,
     because it builds in the lake's staging folder.
@@ -844,6 +858,7 @@ def build_core_tables(lake: LakeStore, *, dry_run: bool = False) -> CoreBuildSum
                     )
                     for table_name in CORE_TABLE_NAMES
                 },
+                code_sha256=hash_lake_code(),
             )
             _publish_staged_core(lake, staged_core_dir, core_state)
             return CoreBuildSummary(run_id, row_counts, combined_report, published=True, changes=table_changes)
@@ -852,7 +867,7 @@ def build_core_tables(lake: LakeStore, *, dry_run: bool = False) -> CoreBuildSum
 
 
 def verify_core_tables(lake: LakeStore, *, deep: bool = False) -> tuple[int, list[str]]:
-    """Verify published `data/core/` tables against `core_state.json`, the clean layer and Strategy 1 checks."""
+    """Verify published `data/core/` tables against `core_state.json`, the clean layer and the core checks."""
     core_state = lake.load_core_state()
     if core_state is None:
         if any(lake.core_dir.rglob("*.parquet")):

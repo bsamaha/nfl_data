@@ -9,7 +9,7 @@ The rebuild steps, in order:
 1. Source inventory (done): `docs/SOURCE_INVENTORY.md`.
 2. Clean project (done).
 3. Ingest (done): `python -m nfl_lake update` publishes a checked copy of each upstream file into `data/clean/`.
-4. Core tables (done): `python -m nfl_lake build-core` builds the 7 normalized core tables into `data/core/` behind Strategy 1 publish-time checks (`docs/DATA_VERIFICATION.md`).
+4. Core tables (done): `python -m nfl_lake build-core` builds the 7 normalized core tables into `data/core/` behind publish-time checks (`docs/DATA_VERIFICATION.md`).
 5. Features.
 6. First projection.
 7. Rebuild the app.
@@ -33,7 +33,7 @@ To change the code, turn the commit hook on once per clone:
 git config core.hooksPath .githooks
 ```
 
-Before each commit it runs `ruff format --check`, `ruff check` and the tests, and stops a commit that fails one. `uv run ruff format` lays the code out and `uv run ruff check` looks for mistakes.
+Before each commit it runs `ruff format --check`, `ruff check` and the tests, and stops a commit that fails one. It also stops a commit on `master`, which takes merges only, and one made while files on disk differ from what is staged, since the checks read the files on disk. `uv run ruff format` lays the code out and `uv run ruff check` looks for mistakes. `AGENTS.md` holds the rules for coding agents.
 
 ## Ingest
 
@@ -50,10 +50,10 @@ The first run downloads every file in the catalog, about 600 MB as of November 2
 | `update --seasons 2015-2026` | Limit seasonal datasets to these seasons (`2026`, a range, or `2024,2026`) |
 | `update --datasets pbp,schedules` | Limit the run to these datasets |
 | `update --skip weekly_rosters` | Leave datasets out, e.g. to skip one that is broken upstream for a clean exit 0 |
-| `build-core` | Build the 7 normalized core tables into `data/core/`, gated by Strategy 1 publish-time checks, and show what changed against the tables published before |
+| `build-core` | Build the 7 normalized core tables into `data/core/`, gated by publish-time checks, and show what changed against the tables published before |
 | `build-core --dry-run` | Build and check the core tables, show what would change, and publish nothing |
-| `status` | What is published per clean dataset and core table, how the last run ended, and whether the core tables are behind the clean layer |
-| `verify` | Re-check every published clean file and (when built) core table against keys and Strategy 1 checks, and report core tables built from an earlier clean layer; `--deep` also re-hashes every clean, set-aside, raw snapshot, and core file |
+| `status` | What is published per clean dataset and core table, how the last run ended, and whether the core tables are behind the clean layer or were built by other `nfl_lake` code |
+| `verify` | Re-check every published clean file and (when built) core table against keys and the core checks, and report core tables built from an earlier clean layer; `--deep` also re-hashes every clean, set-aside, raw snapshot, and core file |
 | `unlock` | Clear the lock left by an update or core build that was killed |
 
 `update`, `build-core` and `verify` exit non-zero when they find a problem, and `update`/`verify` also exit non-zero when they find nothing to work on: a selection that matches no upstream file, or a lake with nothing published. `status` only reports: it exits 0 even when the last run failed. `--help` on any command lists its options.
@@ -80,7 +80,7 @@ Everything is under `data/`, which git ignores. Set `NFL_LAKE_ROOT` to put it el
 | `data/rejects/<dataset>/<file name>` | Rows set aside because their key was null, such as stat rows with no player |
 | `data/core/` | Normalized, joined core tables (`game`, `team_game`, `player`, `player_game`, `play/play_<season>`, `player_week_status`, `depth_chart_snapshot`). Query this for modeling. |
 | `data/manifest/clean_state.json` | Which upstream file, checksums and contract rules each clean file was built from |
-| `data/manifest/core_state.json` | The published core build: row counts and SHA-256 checksums of its files, and the checksum of every clean file it was built from |
+| `data/manifest/core_state.json` | The published core build: row counts and SHA-256 checksums of its files, the checksum of every clean file it was built from, and of the `nfl_lake` code that built it |
 | `data/manifest/listing_cache.json` | The last GitHub release listing, so that an unchanged one is not downloaded again |
 | `data/manifest/runs.jsonl` | One line per update run: status, errors, counts |
 
@@ -92,7 +92,7 @@ Datasets marked `history: all` in `catalog/datasets.yml` keep a raw snapshot of 
 uv run python -m nfl_lake build-core
 ```
 
-`build-core` builds all 7 normalized tables into `data/_staging/` first, runs the Strategy 1 DuckDB checkbook suite (primary keys, zero join fan-out, 32 current team codes, UTC kickoffs, cross-source boxscore and play-by-play identities for 2016+, stat bounds, and pinned real NFL anchor games), and publishes into `data/core/` only if zero hard (`error`) checks fail. Soft (`warn`) checks (such as in-season FTN/PFR charting lag) are printed without blocking the build. If any `error` check fails, nothing is published and the previous `data/core/` layer is untouched.
+`build-core` builds all 7 normalized tables into `data/_staging/` first, runs the DuckDB checks (primary keys, zero join fan-out, 32 current team codes, UTC kickoffs, cross-source boxscore and play-by-play identities for 2016+, stat bounds, and pinned real NFL anchor games), and publishes into `data/core/` only if zero hard (`error`) checks fail. Soft (`warn`) checks (such as in-season FTN/PFR charting lag) are printed without blocking the build. If any `error` check fails, nothing is published and the previous `data/core/` layer is untouched.
 
 - **All seven tables or none.** Publishing swaps the staged folder in for `data/core/` as a whole. On Windows a core file that is open in another program stops the swap; the build then exits 1 and `data/core/` is as it was.
 - **A clean file the build cannot use fails it the same way.** A file that cannot be read, or that has lost a column a core table selects (as after `update --accept-schema-change`), exits 1 with the table or check that needed it.

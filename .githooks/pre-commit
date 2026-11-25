@@ -1,6 +1,18 @@
 #!/bin/sh
 # Runs before every commit in a clone where `git config core.hooksPath .githooks` has been set.
-# A commit that fails a step is not made, and the step says what to run. The files checked are the ones on disk.
+# A commit that fails a step is not made, and the step says what to do.
+
+if [ "$(git symbolic-ref --short -q HEAD)" = "master" ]; then
+    echo "pre-commit: commit on a claude/<task> or gemini/<task> branch; master takes merges the user approves" >&2
+    exit 1
+fi
+
+# The checks below read the files on disk, so those must be the files being committed.
+if ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard -- '*.py')" ]; then
+    echo "pre-commit: files on disk differ from what is staged; stage them, or stash what is not yours to commit" >&2
+    git status --short >&2
+    exit 1
+fi
 
 uv run ruff format --check || {
     echo "pre-commit: run 'uv run ruff format', stage the result and commit again" >&2
