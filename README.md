@@ -116,9 +116,11 @@ print(
 )
 ```
 
-In `data/core/`, every team column uses the 32 current NFL team codes (`LV`, `LAC`, `LA`), `game.kickoff_utc` is UTC, `team_game.favored_by` is positive when that team is favored, and `player_game` already includes snaps, Next Gen Stats (with Super Bowl week offsets fixed), and PFR advanced stats.
+In `data/core/`, every team column uses the 32 current NFL team codes (`LV`, `LAC`, `LA`), `game.kickoff_utc` is UTC, `team_game.favored_by` is positive when that team is favored, `game.spread_line` is upstream's and is positive when the home team is favored, and `player_game` already includes snaps, Next Gen Stats (with Super Bowl week offsets fixed), and PFR advanced stats.
 
-`player_game` has a row for every player who has a stat line or played a snap in the game. Upstream player stats leave out a player who played without recording a stat, such as a tight end who blocked all game; from 2013, the first season with snap counts, that game is here with `has_stat_line` false, 0 in every counting stat and the snaps played. An average over a player's rows therefore counts the games with nothing in them. Before 2013 a game without a stat has no row.
+`player_game` has a row for every player who has a stat line or played a snap in the game. Upstream player stats leave out a player who played without recording a stat, such as a tight end who blocked all game; from 2013, the first season with snap counts, that game is here with `has_stat_line` false, 0 in every counting stat and the snaps played. An average over a player's rows therefore counts the games with nothing in them. Before 2013 a game without a stat has no row. A share that upstream publishes as NaN or infinity (1999 to 2008 only) is null here.
+
+`player_week_status.injury_report_modified_utc` is UTC in every season. Upstream marks its own column as UTC as well, but through the 2020 season that column holds US Pacific clock time; `docs/DATA_VERIFICATION.md` has the measurements.
 
 If querying `data/clean/` directly, join games on `game_id`, not on team codes; `docs/SOURCE_INVENTORY.md` explains why.
 

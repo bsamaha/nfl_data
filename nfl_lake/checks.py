@@ -530,6 +530,23 @@ def build_core_checks(core_dir: Path, clean_dir: Path) -> list[DataCheck]:
                   AND (kickoff_utc IS NULL OR extract('hour' FROM kickoff_utc AT TIME ZONE 'UTC') BETWEEN 4 AND 12)
             """,
         ),
+        DataCheck(
+            name="core_injury_report_times_in_the_afternoon",
+            severity="error",
+            description="In every season, the median injury_report_modified_utc falls between 13:00 and 18:00 US Eastern",
+            query=f"""
+                WITH report_time AS (
+                    SELECT season, injury_report_modified_utc AT TIME ZONE 'America/New_York' AS eastern
+                    FROM read_parquet('{status}')
+                    WHERE injury_report_modified_utc IS NOT NULL
+                )
+                SELECT season, count(*) AS reports,
+                       round(median(hour(eastern) + minute(eastern) / 60.0), 2) AS median_eastern_hour
+                FROM report_time
+                GROUP BY season
+                HAVING median(hour(eastern) + minute(eastern) / 60.0) NOT BETWEEN 13 AND 18
+            """,
+        ),
         # 3. Cross-source checkbook identities -------------------------------------------------------
         DataCheck(
             name="core_pass_td_equals_rec_td",
@@ -649,6 +666,35 @@ def build_core_checks(core_dir: Path, clean_dir: Path) -> list[DataCheck]:
                 FROM read_parquet('{team_game}')
                 WHERE season >= {STRICT_MIN_SEASON}
                   AND (attempts IS NULL OR targets IS NULL OR attempts - targets < 0 OR attempts - targets > 15)
+            """,
+        ),
+        DataCheck(
+            name="core_snap_teams_consistent_within_game",
+            severity="error",
+            description="Within a game, snap_counts lists every player who has a stat line for one team under one team",
+            query=f"""
+                SELECT s.game_id, s.team, count(DISTINCT sn.team) AS snap_count_teams
+                FROM read_parquet('{clean_player_stats}') s
+                JOIN read_parquet('{player}') p ON p.gsis_id = s.player_id
+                JOIN read_parquet('{clean_snaps}') sn
+                  ON sn.game_id = s.game_id AND NULLIF(sn.pfr_player_id, '') = NULLIF(p.pfr_id, '')
+                GROUP BY s.game_id, s.team
+                HAVING count(DISTINCT sn.team) > 1
+            """,
+        ),
+        # A team's players who were on the field for every offensive snap all have that team's snap count. A player
+        # put on the other team still has the other team's count.
+        DataCheck(
+            name="core_full_time_offense_one_snap_count",
+            severity="error",
+            description="Within a team-game, every player_game row with a 100% offense share has the same offense_snaps",
+            query=f"""
+                SELECT game_id, team, count(*) AS full_time_players,
+                       min(offense_snaps) AS fewest_snaps, max(offense_snaps) AS most_snaps
+                FROM read_parquet('{player_game}')
+                WHERE offense_pct = 1
+                GROUP BY game_id, team
+                HAVING min(offense_snaps) != max(offense_snaps)
             """,
         ),
         DataCheck(

@@ -5,7 +5,7 @@ The result is for a person to read before trusting a build. It blocks nothing; t
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,6 +26,7 @@ class TableChange:
     added_columns: list[str] = field(default_factory=list)
     removed_columns: list[str] = field(default_factory=list)
     retyped_columns: list[str] = field(default_factory=list)
+    not_compared: str = ""  # why the two could not be compared; nothing above is filled in then
 
     @property
     def unchanged(self) -> bool:
@@ -36,7 +37,13 @@ class TableChange:
             or self.added_columns
             or self.removed_columns
             or self.retyped_columns
+            or self.not_compared
         )
+
+
+def _add_new(known: list[str], found: Iterable[str]) -> None:
+    """A table in several files has one list for all of them, with each entry once."""
+    known.extend(entry for entry in found if entry not in known)
 
 
 def _count_rows(connection: duckdb.DuckDBPyConnection, parquet_path: Path) -> int:
@@ -79,22 +86,33 @@ def compare_table(
             _column_types(connection, staged_path),
         )
         shared_columns = [column_name for column_name in staged_types if column_name in published_types]
-        change.added_columns = [column_name for column_name in staged_types if column_name not in published_types]
-        change.removed_columns = [column_name for column_name in published_types if column_name not in staged_types]
-        change.retyped_columns = [
-            f"{column_name} {published_types[column_name]} -> {staged_types[column_name]}"
-            for column_name in shared_columns
-            if published_types[column_name] != staged_types[column_name]
+        retyped_columns = [
+            column_name for column_name in shared_columns if published_types[column_name] != staged_types[column_name]
         ]
+        _add_new(change.added_columns, (name for name in staged_types if name not in published_types))
+        _add_new(change.removed_columns, (name for name in published_types if name not in staged_types))
+        _add_new(
+            change.retyped_columns,
+            (f"{name} {published_types[name]} -> {staged_types[name]}" for name in retyped_columns),
+        )
         shared_list = ", ".join(f'"{column_name}"' for column_name in shared_columns)
-        published, staged = sql_path(published_path), sql_path(staged_path)
+        # A column whose type changed is read in its new type on both sides. The same value in another type has
+        # another hash, and a value the new type cannot hold reads as empty, which counts as a change.
+        published_values = ", ".join(
+            f'TRY_CAST("{column_name}" AS {staged_types[column_name]}) AS "{column_name}"'
+            if column_name in retyped_columns
+            else f'"{column_name}"'
+            for column_name in shared_columns
+        )
+        published_rows = f"(SELECT {published_values} FROM read_parquet('{sql_path(published_path)}'))"
+        staged_rows = f"read_parquet('{sql_path(staged_path)}')"
         # One hash per row keeps this to a pass over each file, however wide the table is.
         row_hashes = f"""
             WITH published AS (
-                SELECT {key_list}, hash({shared_list}) AS row_hash, true AS present FROM read_parquet('{published}')
+                SELECT {key_list}, hash({shared_list}) AS row_hash, true AS present FROM {published_rows}
             ),
             staged AS (
-                SELECT {key_list}, hash({shared_list}) AS row_hash, true AS present FROM read_parquet('{staged}')
+                SELECT {key_list}, hash({shared_list}) AS row_hash, true AS present FROM {staged_rows}
             )
         """
         rows_before, rows_after, added_rows, removed_rows, changed_rows = connection.sql(
@@ -124,8 +142,8 @@ def compare_table(
                 )
                 SELECT {differing}
                 FROM changed
-                JOIN read_parquet('{published}') old USING ({key_list})
-                JOIN read_parquet('{staged}') new USING ({key_list})"""
+                JOIN {published_rows} old USING ({key_list})
+                JOIN {staged_rows} new USING ({key_list})"""
             ).fetchall()[0]
             for column_name, differing_rows in zip(value_columns, differing_counts, strict=True):
                 if differing_rows:
@@ -136,6 +154,8 @@ def compare_table(
 
 def format_table_change(change: TableChange, column_limit: int = 6) -> str:
     """One line a person can scan: the row counts, then what differs."""
+    if change.not_compared:
+        return f"{change.table_name:<22}could not be compared: {change.not_compared}"
     if change.rows_before == change.rows_after:
         row_counts = f"{change.rows_after:,} rows"
     else:

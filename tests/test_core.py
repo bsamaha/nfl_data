@@ -40,7 +40,8 @@ def _populate_valid_clean_lake(lake: LakeStore) -> None:
     - Game 1 (`2025_01_KC_OAK`): EDT kickoff (`13:00` -> `17:00Z`), `OAK -> LV`, a lateral rushing play, and a play
       with a blank `posteam`.
     - Game 2 (`2025_22_LAR_BUF`): Super Bowl EST kickoff (`18:30` -> `23:30Z`), `LAR -> LA`, Next Gen Stats rows in
-      Super Bowl week 23 (schedule week 22), and a `week = 0` season-total row that must not join.
+      Super Bowl week 23 (schedule week 22), a `week = 0` season-total row that must not join, and snap counts
+      that list every player under the other team, as upstream does for three real Super Bowls.
     - Each team has a QB, RB and WR with stat lines, and 8 linemen who appear only in snap_counts.
     """
     _write_clean(
@@ -249,10 +250,11 @@ def _populate_valid_clean_lake(lake: LakeStore) -> None:
         (GAME_2, "BUF", "LAR", ("BufQb00", "BufRb00", "BufWr00")),
         (GAME_2, "LAR", "BUF", ("LaQb00", "LaRb00", "LaWr00")),
     ]:
+        listed_team, listed_opponent = (opponent_code, team_code) if game_id == GAME_2 else (team_code, opponent_code)
         for pfr_player_id, position in zip(skill_pfr_ids, ("QB", "RB", "WR"), strict=True):
-            snap_rows.append((game_id, 2025, team_code, opponent_code, pfr_player_id, position, 60, 1.0))
+            snap_rows.append((game_id, 2025, listed_team, listed_opponent, pfr_player_id, position, 60, 1.0))
         for slot in range(1, 9):
-            snap_rows.append((game_id, 2025, team_code, opponent_code, f"{team_code}Ol0{slot}", "OL", 60, 1.0))
+            snap_rows.append((game_id, 2025, listed_team, listed_opponent, f"{team_code}Ol0{slot}", "OL", 60, 1.0))
     _write_clean(
         lake,
         "snap_counts",
@@ -541,6 +543,12 @@ def test_build_core_publishes_all_seven_tables_and_normalizes_sources(lake: Lake
     assert snaps_only["is_home"].item() is True
     assert snaps_only["position"].item() == "OL"
 
+    # player_game: snap_counts lists Game 2 under the other team, and a player who is only there still gets the right one
+    la_lineman = player_game.filter((pl.col("game_id") == GAME_2) & (pl.col("player_id") == "00-LAROL1"))
+    assert la_lineman["team"].item() == "LA"
+    assert la_lineman["opponent"].item() == "BUF"
+    assert la_lineman["is_home"].item() is False
+
     # play: blank posteam -> NULL, teams normalized, participation & FTN attached
     plays = pl.read_parquet(lake.core_dir / "play" / "play_2025.parquet").sort("game_id", "play_id")
     play_one = plays.filter((pl.col("game_id") == GAME_1) & (pl.col("play_id") == 1.0))
@@ -590,6 +598,155 @@ def test_dry_run_reports_what_a_build_would_change_and_publishes_nothing(lake: L
     assert game_change.changed_columns == {"stadium": 2}
     assert all(change.unchanged for change in changes.values())
     assert not summary.published and _hash_core_files(lake) == published
+
+
+def test_dry_run_reports_a_column_that_one_season_of_play_gains(lake: LakeStore):
+    _populate_valid_clean_lake(lake)
+    plays_2025 = pl.read_parquet(lake.clean_file_path("pbp", "play_by_play_2025.parquet"))
+    _write_clean(lake, "pbp", "play_by_play_2024.parquet", plays_2025.clear())  # an earlier season, with no plays
+    build_core_tables(lake)
+    _rewrite_clean(lake, "pbp", "play_by_play_2024.parquet", pl.lit(1).alias("new_upstream_column"))
+
+    summary = build_core_tables(lake, dry_run=True)
+
+    assert summary.changes is not None
+    play_change = next(change for change in summary.changes if change.table_name == "play")
+    assert play_change.added_columns == ["new_upstream_column"]
+
+
+def test_dry_run_does_not_count_a_column_that_only_changed_type_as_changed_rows(lake: LakeStore):
+    _populate_valid_clean_lake(lake)
+    build_core_tables(lake)
+    _rewrite_clean(lake, "schedules", "games.parquet", pl.col("spread_line").cast(pl.Float32))  # the same lines
+
+    summary = build_core_tables(lake, dry_run=True)
+
+    assert summary.changes is not None
+    game_change = next(change for change in summary.changes if change.table_name == "game")
+    assert game_change.retyped_columns and game_change.changed_rows == 0
+
+
+def test_dry_run_reports_the_other_tables_when_one_cannot_be_compared(lake: LakeStore):
+    _populate_valid_clean_lake(lake)
+    build_core_tables(lake)
+    (lake.core_dir / "player.parquet").write_bytes(b"not a parquet file")
+    _rewrite_clean(lake, "schedules", "games.parquet", pl.lit("Renamed Stadium").alias("stadium"))
+
+    summary = build_core_tables(lake, dry_run=True)
+
+    assert summary.changes is not None
+    changes = {change.table_name: change for change in summary.changes}
+    assert changes["player"].not_compared
+    assert changes["game"].changed_columns == {"stadium": 2}
+
+
+def test_a_share_upstream_could_not_compute_is_empty_in_player_game(lake: LakeStore):
+    _populate_valid_clean_lake(lake)
+    # Upstream writes NaN or infinity in a share whose divisor is zero.
+    _rewrite_clean(
+        lake,
+        "stats_player_week",
+        "stats_player_week_2025.parquet",
+        pl.when(pl.col("player_id") == "00-LVQB")
+        .then(float("nan"))
+        .when(pl.col("player_id") == "00-LVRB")
+        .then(float("inf"))
+        .otherwise(0.25)
+        .alias("target_share"),
+    )
+
+    build_core_tables(lake)
+
+    player_game = pl.read_parquet(lake.core_dir / "player_game.parquet").filter(pl.col("game_id") == GAME_1)
+    target_shares = dict(zip(player_game["player_id"], player_game["target_share"], strict=True))
+    assert target_shares["00-LVQB"] is None
+    assert target_shares["00-LVRB"] is None
+    assert target_shares["00-LVWR"] == 0.25
+
+
+def test_injury_report_times_through_2020_are_read_as_pacific_clock_time(lake: LakeStore):
+    _populate_valid_clean_lake(lake)
+    # Upstream marks these as UTC, but noon here is noon in California: 19:00 UTC in September, 20:00 in November.
+    injuries_2025 = pl.read_parquet(lake.clean_file_path("injuries", "injuries_2025.parquet"))
+    _write_clean(
+        lake,
+        "injuries",
+        "injuries_2020.parquet",
+        injuries_2025.with_columns(
+            pl.lit(2020, dtype=pl.Int64).alias("season"),
+            pl.Series("week", [1, 10]),
+            pl.Series(
+                "date_modified",
+                [datetime(2020, 9, 11, 12, 0, tzinfo=UTC), datetime(2020, 11, 13, 12, 0, tzinfo=UTC)],
+            ),
+        ),
+    )
+
+    build_core_tables(lake)
+
+    status_2020 = pl.read_parquet(lake.core_dir / "player_week_status.parquet").filter(pl.col("season") == 2020)
+    assert status_2020.sort("week")["injury_report_modified_utc"].to_list() == [
+        datetime(2020, 9, 11, 19, 0, tzinfo=UTC),
+        datetime(2020, 11, 13, 20, 0, tzinfo=UTC),
+    ]
+
+
+def test_build_core_blocks_injury_report_times_that_are_not_in_the_afternoon(lake: LakeStore):
+    _populate_valid_clean_lake(lake)
+    # As when upstream holds a season in another clock time than the build expects: 11:00 UTC is 07:00 Eastern.
+    _rewrite_clean(
+        lake,
+        "injuries",
+        "injuries_2025.parquet",
+        pl.lit(datetime(2025, 9, 5, 11, 0, tzinfo=UTC)).alias("date_modified"),
+    )
+
+    with pytest.raises(CoreBuildFailed) as exc_info:
+        build_core_tables(lake)
+
+    assert exc_info.value.report is not None
+    assert {outcome.name for outcome in exc_info.value.report.errors} == {"core_injury_report_times_in_the_afternoon"}
+
+
+def test_build_core_blocks_a_game_that_snap_counts_lists_partly_under_the_other_team(lake: LakeStore):
+    _populate_valid_clean_lake(lake)
+    # The build turns back a game listed wholly under the other team. Here only one quarterback is.
+    is_lv_quarterback = pl.col("pfr_player_id") == "LvQb00"
+    _rewrite_clean(
+        lake,
+        "snap_counts",
+        "snap_counts_2025.parquet",
+        pl.when(is_lv_quarterback).then(pl.col("opponent")).otherwise(pl.col("team")).alias("team"),
+        pl.when(is_lv_quarterback).then(pl.col("team")).otherwise(pl.col("opponent")).alias("opponent"),
+    )
+
+    with pytest.raises(CoreBuildFailed) as exc_info:
+        build_core_tables(lake)
+
+    assert exc_info.value.report is not None
+    assert {outcome.name for outcome in exc_info.value.report.errors} == {"core_snap_teams_consistent_within_game"}
+
+
+def test_build_core_blocks_a_player_without_a_stat_line_listed_under_the_other_team(lake: LakeStore):
+    _populate_valid_clean_lake(lake)
+    # Kansas City ran 70 offensive snaps in Game 1 and Oakland 60. One Kansas City lineman is listed as Oakland's:
+    # no stat line says which team that was, but 70 snaps are not Oakland's count.
+    is_listed_for_kansas_city = pl.col("team") == "KC"
+    is_moved_lineman = pl.col("pfr_player_id") == "KCOl01"
+    _rewrite_clean(
+        lake,
+        "snap_counts",
+        "snap_counts_2025.parquet",
+        pl.when(is_listed_for_kansas_city).then(70).otherwise(pl.col("offense_snaps")).alias("offense_snaps"),
+        pl.when(is_moved_lineman).then(pl.lit("OAK")).otherwise(pl.col("team")).alias("team"),
+        pl.when(is_moved_lineman).then(pl.lit("KC")).otherwise(pl.col("opponent")).alias("opponent"),
+    )
+
+    with pytest.raises(CoreBuildFailed) as exc_info:
+        build_core_tables(lake)
+
+    assert exc_info.value.report is not None
+    assert {outcome.name for outcome in exc_info.value.report.errors} == {"core_full_time_offense_one_snap_count"}
 
 
 def test_build_core_blocks_publish_when_a_strategy_1_check_fails(lake: LakeStore):

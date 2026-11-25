@@ -1,6 +1,6 @@
 # Data Verification Specification (Strategy 1)
 
-Measured on 24 Nov 2026 (through week 11 of the 2026 season) against the full local lake (`185` files, `619.9 MB`, `18` datasets in `data/clean/`, verified clean with `python -m nfl_lake verify --deep`).
+Measured on 24 Nov 2026 (through week 11 of the 2026 season) against the full local lake (`185` files, `426.4 MB`, `18` datasets in `data/clean/`, verified clean with `python -m nfl_lake verify --deep`).
 
 This document holds the measured baseline numbers, team-code mappings, join quirks, checkbook rules, DraftKings scoring deltas, and pinned real NFL anchor games behind the publish-time checks. The rules for **Stage 3 (Ingest)** and **Stage 4 (Core tables)** are enforced by `nfl_lake/checks.py` on every `build-core` and `verify`. The rules for **Stage 5 (Features)** and **Stage 6 (Projections & DraftKings)** are measured here and no code runs them yet.
 
@@ -91,6 +91,28 @@ In `schedules` and `stats_player_week`, the Super Bowl is `week = 21` (2016–20
   - Every single game starts between **`13:00` UTC and `03:59` UTC** (London/international morning games at `13:30`/`14:30` UTC through late Monday Night West Coast doubleheaders up to `23:30` ET = `03:30` UTC in `2013_05_SD_OAK`).
   - **Zero (`0`) games start between `04:00` and `12:59` UTC.** Any kickoff landing in `04:00–12:59` UTC immediately flags a timezone or AM/PM conversion bug.
 
+### 2.6 Games `snap_counts` Lists Under the Other Team (`snap_counts` → `player_game.team`)
+A player with a stat line takes the team from `stats_player_week`. A player who is only in `snap_counts` can only take it from there.
+
+- **Measured against the stat lines, `2013–2026`:** after team-code normalization, `snap_counts` and `stats_player_week` name the same team for every player they share, except in three Super Bowls where they disagree for every one: `2014_21_NE_SEA` (`58` of `58`), `2015_21_CAR_DEN` (`66` of `66`) and `2018_21_NE_LA` (`55` of `55`). There `team` and `opponent` are exchanged. No game is partly exchanged.
+- **What it would do:** `30`, `23` and `35` players of those games have no stat line, so `88` `player_game` rows would sit on the wrong team, with `opponent` and `is_home` wrong too.
+- **Build rule:** a game in which more shared players are listed under their opponent than under their own team is turned back before the join.
+- **How a wrong team shows in the built table:** a team's players with a `100%` offense share all have that team's snap count. With the three games turned back, `0` team-games from `2013–2026` hold two such counts. As listed upstream, exactly the `6` team-games of the three Super Bowls do (`53` and `74`, `60` and `80`, `65` and `72` snaps). `5,829` of the `5,848` team-games from 2016 have at least one such player.
+- **Why the 11-player rule cannot do this:** it reads `snap_counts`, where an exchanged game still has 11 players a side. Read from `player_game` it would catch `2018_21_NE_LA` (`9.125`), but a full-time lineman whose PFR id `players` lacks has no row there, which already puts `9` Buffalo team-games from 2024 to 2026 exactly on its lower limit of `10.0`. One more missing player would stop every build.
+
+### 2.7 Injury Report Times (`injuries.date_modified` → `player_week_status.injury_report_modified_utc`)
+`date_modified` is a UTC timestamp in every season that has it. Through the 2020 season the clock time in it is not UTC.
+
+| Seasons | Median hour as published, September / November | Median hour in US Eastern, as published | Median hours from report to kickoff, as published |
+|---|---|---|---|
+| `2016–2020` | `11.72–12.35` / `11.77–12.45` (no daylight-saving shift) | `7.25–7.73` | `54.7–55.1` |
+| `2021–2024` | `19.18–19.58` / `19.62–20.25` (shifts with daylight saving, as UTC does) | `15.05–15.50` | `47.1–47.6` |
+
+- **Reading:** the earlier seasons hold a local clock time, and clubs did not file their reports at 7 in the morning. Read as `America/Los_Angeles`, those seasons have a median Eastern hour of `14.82–15.37` and a median of `47.3–47.6` hours to kickoff, the same as the later seasons. That the clock is Pacific is inferred from these numbers; upstream does not document it.
+- **Where it changes:** between seasons. The January 2021 rows of the 2020 season still hold Pacific time (median hour `12.48`), and September 2021 holds UTC (`19.52`).
+- **Build rule:** seasons through 2020 are read as `America/Los_Angeles` and stored as UTC. `core_injury_report_times_in_the_afternoon` stops the build if a season's median leaves the afternoon, as it would if upstream republished the early seasons in UTC.
+- **Not changed:** `24` rows from `2016–2024` were last modified after their team's kickoff, with or without the conversion.
+
 ---
 
 ## 3. Calibrated Strategy 1 Checkbook Rules (Stages 3–6)
@@ -138,11 +160,14 @@ All rules below run on `data/core/` in staging **before** publishing. Strict rul
 | **Shape & Joins** | `core_ngs_weekly_join_complete` | `error` | `2016+` | After dropping `week=0` and mapping SB week (`22->21`, `23->22`), `0` weekly NGS rows fail to join `player_game`. |
 | **Standardization** | `core_only_32_current_teams` | `error` | all | Every non-null team column across all 7 core tables is in the 32 current NFL team codes (zero `OAK`, `SD`, `STL`, `LAR`, `''`). |
 | **Standardization** | `core_kickoff_utc_valid` | `error` | `2000+` | `game.kickoff_utc` is non-null UTC and never falls in `04:00–12:59` UTC. |
+| **Standardization** | `core_injury_report_times_in_the_afternoon` | `error` | `2016+` | Per season, the median `player_week_status.injury_report_modified_utc` falls between `13:00` and `18:00` US Eastern (measured: `14.82–15.50`; Section 2.7). |
 | **Checkbook** | `core_pass_td_equals_rec_td` | `error` | all | `sum(player_game.passing_tds) == sum(player_game.receiving_tds)` per `(game_id, team)`. |
 | **Checkbook** | `core_player_sums_equal_team` | `error` | `2016+` | `sum(player_game)` == `team_game` for all 12 core cols (`completions`, `attempts`, `passing_yards`, `passing_tds`, `passing_interceptions`, `carries`, `rushing_yards`, `rushing_tds`, `receptions`, `targets`, `receiving_yards`, `receiving_tds`). |
 | **Checkbook** | `core_team_points_equal_schedule` | `error` | `2016+` | Derived `team_game` points (`6*(pass+rush+def+st+fum_rec TDs) + 3*fg_made + pat_made + 2*(rush_2pt+rec_2pt+def_2pt+def_safeties)`) == `game.home_score` / `away_score`. |
 | **Checkbook** | `core_pbp_equals_team_boxscore` | `error` | `2016+` | `sum(play)` == `team_game` for `passing_yards`, `rushing_yards + lateral_rushing_yards`, `pass_touchdown`, and `rush_touchdown` per `(game_id, team)`. |
 | **Checkbook** | `core_targets_vs_attempts_gap` | `error` | `2016+` | `0 <= team_game.attempts - team_game.targets <= 15` (measured max: `9`). |
+| **Checkbook** | `core_snap_teams_consistent_within_game` | `error` | all | Within a game, `snap_counts` lists every player who has a stat line for one team under one team: the game is listed as played or wholly under the other team, never partly (Section 2.6). |
+| **Checkbook** | `core_full_time_offense_one_snap_count` | `error` | all | Within a `player_game` team-game, every row with `offense_pct = 1` has the same `offense_snaps` (measured: `0` exceptions; Section 2.6). |
 | **Checkbook** | `core_snap_11_player_physics`, `core_snap_pct_11_player_warn` | `error`, `warn` | `2016+` | `error` if `sum(offense_snaps) / max(offense_snaps)` outside `[10.0, 12.0]` (measured: `10.275–11.830`, p0.5–p99.5 = `10.986–11.015`); `warn` if `sum(offense_pct)` outside `[10.5, 11.5]` (flags only the 2 known 2019 KC PFR-denominator games). |
 | **Domain Bounds** | `core_stat_ranges_valid` | `error` | `2016+` | `completions <= attempts`, `receptions <= targets`, counts `>= 0`, `offense_pct` in `[0, 1]`, `passing_yards` in `[-50, 650]`, `rushing_yards` in `[-60, 350]`, `receiving_yards` in `[-50, 380]` (measured historical extremes: pass `-16..527`, rush `-34..296`, rec `-22..329`). |
 | **Anchors** | `core_anchor_games_exact` | `error` | pinned | Each pinned game in Section 5 that is in `game` matches the values the check pins for it. |

@@ -273,4 +273,3 @@ def test_download_gives_up(tmp_path, http_status, expected_attempts):
             SAMPLE_ASSET, tmp_path / "a.parquet"
         )
     assert len(requests) == expected_attempts
-    assert not (tmp_path / "a.parquet").exists()

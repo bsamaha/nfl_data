@@ -90,6 +90,10 @@ _STAT_COLUMNS_EMPTY_WITHOUT_AN_ATTEMPT = frozenset(
     }
 )
 _NUMERIC_COLUMN_TYPES = frozenset({"INTEGER", "BIGINT", "DOUBLE"})
+_FLOAT_COLUMN_TYPES = frozenset({"FLOAT", "DOUBLE"})
+# The last season whose injury report times upstream holds as US Pacific clock time; section 2.7 of
+# docs/DATA_VERIFICATION.md gives the measurements.
+_LAST_SEASON_WITH_PACIFIC_REPORT_TIMES = 2020
 
 
 class CoreBuildFailed(Exception):
@@ -266,6 +270,9 @@ def _player_game_stat_selects(connection: duckdb.DuckDBPyConnection, player_stat
 
     A player who played without recording a stat has no stat line upstream. That row is filled the way upstream
     fills a stat line with nothing in it, and takes the player's name and position from `player`.
+
+    Upstream writes NaN or infinity in a share whose divisor is zero. Either one spoils every sum and average it
+    is part of, so both become empty.
     """
     selects: list[str] = []
     for column_name, column_type, *_ in connection.sql(
@@ -273,12 +280,15 @@ def _player_game_stat_selects(connection: duckdb.DuckDBPyConnection, player_stat
     ).fetchall():
         if column_name in _STAT_KEY_COLUMNS:
             continue
+        stat_value = f's."{column_name}"'
+        if column_type in _FLOAT_COLUMN_TYPES:
+            stat_value = f"CASE WHEN isfinite({stat_value}) THEN {stat_value} END"
         if column_name in _STAT_PLAYER_COLUMNS:
-            expression = f'coalesce(s."{column_name}", p.{_STAT_PLAYER_COLUMNS[column_name]})'
+            expression = f"coalesce({stat_value}, p.{_STAT_PLAYER_COLUMNS[column_name]})"
         elif column_type in _NUMERIC_COLUMN_TYPES and column_name not in _STAT_COLUMNS_EMPTY_WITHOUT_AN_ATTEMPT:
-            expression = f'CASE WHEN s.player_id IS NULL THEN 0 ELSE s."{column_name}" END'
+            expression = f"CASE WHEN s.player_id IS NULL THEN 0 ELSE {stat_value} END"
         else:
-            expression = f's."{column_name}"'
+            expression = stat_value
         selects.append(f'{expression} AS "{column_name}"')
     return ",\n            ".join(selects)
 
@@ -289,6 +299,9 @@ def _build_player_game_table(connection: duckdb.DuckDBPyConnection, clean_dir: P
     stats_player_week only lists players who recorded a stat, so a receiver who played 60 snaps and was never
     thrown to is missing from it. snap_counts (2013 on) has that game, and a table without it would overstate
     every per-game average built from it.
+
+    snap_counts lists every player of a few games under the other team. The stat lines of the same game show
+    which games, and those are turned back, so a player who is only in snap_counts gets the right team.
     """
     player_stats = sql_path(clean_dir / "stats_player_week" / "*.parquet")
     game_path = sql_path(staged_core_dir / "game.parquet")
@@ -308,13 +321,28 @@ def _build_player_game_table(connection: duckdb.DuckDBPyConnection, clean_dir: P
     team = f"coalesce({_norm_team('s.team')}, snap.team)"
     opponent = f"coalesce({_norm_team('s.opponent_team')}, snap.opponent)"
     query = f"""
-        WITH snap AS (
+        WITH listed_snap AS (
             SELECT sn.game_id, sp.gsis_id AS player_id,
                    {_norm_team("sn.team")} AS team,
                    {_norm_team("sn.opponent")} AS opponent,
                    sn.offense_snaps, sn.offense_pct, sn.defense_snaps, sn.defense_pct, sn.st_snaps, sn.st_pct
             FROM read_parquet('{snaps}') sn
             JOIN read_parquet('{player_path}') sp ON NULLIF(sn.pfr_player_id, '') = NULLIF(sp.pfr_id, '')
+        ),
+        reversed_game AS (
+            SELECT game_id
+            FROM listed_snap
+            JOIN read_parquet('{player_stats}') s USING (game_id, player_id)
+            GROUP BY game_id
+            HAVING count(*) FILTER (WHERE {_norm_team("s.team")} = listed_snap.opponent)
+                 > count(*) FILTER (WHERE {_norm_team("s.team")} = listed_snap.team)
+        ),
+        snap AS (
+            SELECT listed_snap.* EXCLUDE (team, opponent),
+                   CASE WHEN reversed_game.game_id IS NULL THEN team ELSE opponent END AS team,
+                   CASE WHEN reversed_game.game_id IS NULL THEN opponent ELSE team END AS opponent
+            FROM listed_snap
+            LEFT JOIN reversed_game USING (game_id)
         ),
         ngs_p AS (
             SELECT season, {NGS_WEEK_AS_SCHEDULE_WEEK} AS week, player_gsis_id AS player_id,
@@ -567,9 +595,16 @@ def _build_player_week_status_table(
     rosters = sql_path(clean_dir / "weekly_rosters" / "*.parquet")
     injuries = sql_path(clean_dir / "injuries" / "*.parquet")
     # The only record of when an injury report was last changed. Upstream stopped publishing it with the 2025
-    # season, so a lake that holds no earlier season has no such column at all.
+    # season, so a lake that holds no earlier season has no such column at all. Upstream marks every value as UTC,
+    # but through the 2020 season the clock time it holds is US Pacific time, seven or eight hours behind.
     injury_columns = connection.sql(f"SELECT * FROM read_parquet('{injuries}', union_by_name=true) LIMIT 0").columns
-    report_modified = "date_modified" if "date_modified" in injury_columns else "CAST(NULL AS TIMESTAMPTZ)"
+    report_modified = (
+        f"""CASE WHEN CAST(season AS INTEGER) <= {_LAST_SEASON_WITH_PACIFIC_REPORT_TIMES}
+                 THEN timezone('America/Los_Angeles', date_modified AT TIME ZONE 'UTC')
+                 ELSE date_modified END"""
+        if "date_modified" in injury_columns
+        else "CAST(NULL AS TIMESTAMPTZ)"
+    )
     query = f"""
         WITH wr AS (
             SELECT
@@ -723,24 +758,27 @@ def _publish_staged_core(lake: LakeStore, staged_core_dir: Path, core_state: Cor
 def _compare_with_published(
     connection: duckdb.DuckDBPyConnection, lake: LakeStore, staged_core_dir: Path
 ) -> list[TableChange] | None:
-    """What publishing the staged tables would change. A comparison that cannot be made never stops a build:
-    rebuilding is the remedy for a published file that cannot be read."""
+    """What publishing the staged tables would change, or None when no core tables are published.
+
+    A table that cannot be compared says so in its own entry and never stops a build: rebuilding is the remedy
+    for a published file that cannot be read.
+    """
     if not lake.core_dir.exists():
         return None
-    try:
-        return [
-            compare_table(
+    table_changes: list[TableChange] = []
+    for table_name in CORE_TABLE_NAMES:
+        try:
+            table_change = compare_table(
                 connection,
                 table_name,
                 CORE_TABLE_KEYS[table_name],
                 _list_table_files(lake.core_dir, table_name),
                 _list_table_files(staged_core_dir, table_name),
             )
-            for table_name in CORE_TABLE_NAMES
-        ]
-    except duckdb.Error as error:
-        logger.warning("the published core tables could not be compared: %s", str(error).partition("\n")[0])
-        return None
+        except duckdb.Error as error:
+            table_change = TableChange(table_name, not_compared=str(error).partition("\n")[0])
+        table_changes.append(table_change)
+    return table_changes
 
 
 def build_core_tables(lake: LakeStore, *, dry_run: bool = False) -> CoreBuildSummary:

@@ -4,7 +4,7 @@ A local lake of nflverse files. `README.md` is the manual (commands, guarantees,
 
 ## Commands
 
-- `uv sync`, then `uv run pytest`. No test touches the network; the suite takes about ten seconds.
+- `uv sync`, then `uv run pytest`. No test touches the network, and the suite takes well under a minute.
 - `git config core.hooksPath .githooks`, once per clone. The commit hook then runs `ruff format --check`, `ruff check` and the tests, and stops a commit that fails one. `uv run ruff format` lays the code out.
 - `uv run python -m nfl_lake update --dry-run` shows what a run would fetch and rebuild without writing anything.
 - `uv run python -m nfl_lake build-core --dry-run` builds and checks the core tables from the real clean layer, prints what would change against the published ones, and publishes nothing.

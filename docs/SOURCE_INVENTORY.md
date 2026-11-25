@@ -61,6 +61,7 @@ All URLs have the form `https://github.com/nflverse/nflverse-data/releases/downl
 
 - **Grain:** one row per player per game in which the player recorded a stat, all positions including defense and kickers. 150 columns, identical in every season.
 - **Not in this file:** a player who played without recording a stat. From 2013 to 2026, 93,923 snap-count rows of players in `players` have no row here; since 2016 that is 8,066 of the 68,063 QB, RB, WR and TE player-games with an offensive snap (25% for TE, 10% for WR). A stat line with nothing in a category holds 0 in its counts and shares and null in `passing_epa`, `passing_cpoe`, `pacr`, `rushing_epa`, `receiving_epa`, `racr`, `fg_long`, `fg_pct`, `pat_pct` and `pt_long`.
+- **Not a number:** from 1999 to 2008, `target_share`, `air_yards_share` and `wopr` hold NaN where the share has nothing to divide by (102,141, 76,174 and 126,778 rows), and infinity in 3 rows each of the last two. No later season has either. `player_game` holds null in their place.
 - **Key:** `player_id, game_id`, unique in all 28 seasons. `player_id` is the gsis ID.
 - **Links:** every `game_id` is in the schedule.
 - **Rows to drop:** from 2001 on, one row per week has a null `player_id`, null name and null position (21 or 22 a season).
@@ -95,6 +96,7 @@ All URLs have the form `https://github.com/nflverse/nflverse-data/releases/downl
 - **Key:** `game_id, pfr_player_id`, unique in every season. The 2012 file is empty, so coverage starts in 2013.
 - **Links:** every `game_id` is in the schedule and no played game is missing from 2013 to 2025.
 - **Player join:** there is no gsis ID. Join through `players.pfr_id`. In 2025 that maps 628 of 630 QB, RB, WR and TE players; 6 of 2,189 IDs overall have no match.
+- **Team:** three Super Bowls (`2014_21_NE_SEA`, `2015_21_CAR_DEN`, `2018_21_NE_LA`) list every player under the other team, with `team` and `opponent` exchanged. No other game from 2013 to 2026 disagrees with the player stats about a team. `player_game` turns those games back.
 
 ### Injuries
 
@@ -102,7 +104,7 @@ All URLs have the form `https://github.com/nflverse/nflverse-data/releases/downl
 - **Key:** `season, game_type, week, team, gsis_id`, unique apart from 2 rows in 2024.
 - **In-season:** yes. The 2026 file had rows for weeks 1–11.
 - **Schema breaks:** `season` and `week` are doubles before 2021. From 2025 the file gains `season_type` and loses `date_modified`.
-- **Point in time:** through 2024, `date_modified` shows when the row last changed, and 78% of 2024 rows were last changed on a Friday. So the file is the final weekly report, not a daily history. From 2025 there is no timestamp at all, so the only way to know what a report said on a given day is to snapshot it yourself.
+- **Point in time:** through 2024, `date_modified` shows when the row last changed, and 78% of 2024 rows were last changed on a Friday. So the file is the final weekly report, not a daily history. The value is marked as UTC in every season, but through the 2020 season it holds US Pacific clock time, seven or eight hours behind; `player_week_status` converts those seasons. From 2025 there is no timestamp at all, so the only way to know what a report said on a given day is to snapshot it yourself.
 - **Values:** `report_status` is null, `Questionable`, `Out` or `Doubtful`, plus 6 rows with `Note` in 2024. Practice status is spelled out in full.
 
 ### Depth charts
@@ -189,9 +191,9 @@ Built into `data/core/` by `python -m nfl_lake build-core`, gated by Strategy 1 
 | `game.parquet` | `game_id` | Schedules: kickoff in UTC (`kickoff_utc`), teams in current 32 codes, lines, rest, roof, surface |
 | `team_game.parquet` | `game_id, team` | Team stats joined to `game` for opponent, `is_home`, `points_scored`/`points_allowed`, `favored_by` (+ if team is favored), and `total_line` |
 | `player.parquet` | `gsis_id` | Players with normalized `latest_team`/`draft_team`, enriched with latest `sleeper_id` and `yahoo_id` from `weekly_rosters` |
-| `player_game.parquet` | `game_id, player_id` | Every player with a stat line or a snap in the game: player stats, plus snaps through `pfr_id`, plus Next Gen Stats (with Super Bowl week `22→21` / `23→22` alignment), plus PFR advanced stats where present. A player with snaps and no stat line (2013 on) has `has_stat_line` false and the values of an empty stat line |
+| `player_game.parquet` | `game_id, player_id` | Every player with a stat line or a snap in the game: player stats, plus snaps through `pfr_id`, plus Next Gen Stats (with Super Bowl week `22→21` / `23→22` alignment), plus PFR advanced stats where present. A player with snaps and no stat line (2013 on) has `has_stat_line` false, the values of an empty stat line, and the right team even in a game that `snap_counts` lists under the other team. A share upstream publishes as NaN or infinity is null |
 | `play/play_<season>.parquet` | `game_id, play_id` | Play-by-play partitioned per season with normalized teams, plus participation (`2016+`), plus FTN charting (`2022+`) |
-| `player_week_status.parquet` | `season, week, team, gsis_id` | `FULL OUTER JOIN` of `weekly_rosters` (`2016+`) and `injuries` (`2016+`) so injury-only rows are preserved. `injury_report_modified_utc` is the injuries `date_modified`, which upstream publishes through 2024 only |
+| `player_week_status.parquet` | `season, week, team, gsis_id` | `FULL OUTER JOIN` of `weekly_rosters` (`2016+`) and `injuries` (`2016+`) so injury-only rows are preserved. `injury_report_modified_utc` is the injuries `date_modified` in UTC (seasons through 2020 converted from Pacific clock time), which upstream publishes through 2024 only |
 | `depth_chart_snapshot.parquet` | `dt, team, pos_id, pos_rank` | Snapshot depth charts (`2025+`), parsed `snapshot_utc`, and missing `gsis_id` values rescued via `players.espn_id` |
 
 Week-based depth charts and weekly rosters before 2016 need a deduplication rule before they can be loaded. Decide whether they are worth it once the first features exist.
